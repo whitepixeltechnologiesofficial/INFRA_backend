@@ -4,7 +4,7 @@ import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
+// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as SecureStore from 'expo-secure-store';
 //import * as Device from 'expo-device'; // optional, fallback provided
 
 const C = {
@@ -104,21 +105,6 @@ export default function OtpEntryScreen() {
     ]).start();
   }, [shake]);
 
-  // --- Device info helpers ---
-  const getDeviceId = (): string => {
-    return `device_${Math.random().toString(36).slice(2, 10)}`;
-  };
-
-  const getDeviceName = (): string => {
-    return Platform.OS === 'ios' ? 'iPhone' : 'Android Device';
-  };
-
-  const getPlatform = (): 'ios' | 'android' | 'web' => {
-    if (Platform.OS === 'ios') return 'ios';
-    if (Platform.OS === 'android') return 'android';
-    return 'web';
-  };
-
   // --- Verify OTP ---
   const verify = useCallback(
     async (entered: string) => {
@@ -138,36 +124,18 @@ export default function OtpEntryScreen() {
         const result = await onboardingApi.verifyOtp({ phoneNumber, code: entered });
 
         if (result.status === 'success') {
-          // ✅ OTP correct → check if user exists
-          try {
-            const existingUser = await onboardingApi.checkExistingUser({ phoneNumber });
+          const deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          // Write all tokens in parallel — saves ~100ms on cold storage.
+          await Promise.all([
+            SecureStore.setItemAsync('userId', result.userId),
+            SecureStore.setItemAsync('deviceId', deviceId),
+            SecureStore.setItemAsync('accessToken', result.accessToken),
+            SecureStore.setItemAsync('refreshToken', result.refreshToken),
+          ]);
 
-            if (existingUser.exists && existingUser.userId) {
-              // 👤 Existing user → login handoff → go to main app
-              const deviceInfo = {
-                deviceId: getDeviceId(),
-                deviceName: getDeviceName(),
-                platform: getPlatform(),
-              };
-
-              await onboardingApi.handleLoginHandoff({
-                phoneNumber,
-                userId: existingUser.userId,
-                deviceInfo,
-              });
-
-              // Navigate to the main app (tabs)
-              router.replace('/(tabs)');
-            } else {
-              // 🆕 New user → go to profile setup
-              router.replace({
-                pathname: '/profile-setup',
-                params: { phoneNumber },
-              });
-            }
-          } catch (error: any) {
-            // If checkExistingUser fails, we treat as new user to avoid blocking
-            console.warn('Failed to check existing user:', error);
+          if (result.routing === 'chats') {
+            router.replace('/(tabs)');
+          } else {
             router.replace({
               pathname: '/profile-setup',
               params: { phoneNumber },
@@ -191,6 +159,9 @@ export default function OtpEntryScreen() {
             'You entered an incorrect OTP too many times. For your security, please start again and try once more.',
             [{ text: 'OK', onPress: () => router.replace('/phone-entry') }],
           );
+        } else if (result.status === 'expired') {
+          setOtp(Array(BOXES).fill(''));
+          setError('OTP expired. Request a new one.');
         }
       } catch {
         setError('Failed to verify OTP. Please try again.');
@@ -226,7 +197,7 @@ export default function OtpEntryScreen() {
       if (pos < BOXES) {
         inputRefs.current[pos]?.focus();
       } else if (next.every((d) => d !== '')) {
-        setTimeout(() => verify(next.join('')), 220);
+        verify(next.join(''));
       }
     }
   };
@@ -241,14 +212,17 @@ export default function OtpEntryScreen() {
   const handleResend = async () => {
     if (resendCooldown > 0) return;
 
+    // Fire resend optimistically — update UI immediately, don't block on network.
+    setResendCooldown(30);
+    setExpirySeconds(CODE_LIFETIME);
+    setOtp(Array(BOXES).fill(''));
+    setError('');
+
     try {
       await onboardingApi.sendOtp({ phoneNumber });
-      setResendCooldown(30);
-      setExpirySeconds(CODE_LIFETIME);
-      setOtp(Array(BOXES).fill(''));
-      setError('');
-      Alert.alert('OTP Sent', 'A new OTP has been sent.');
     } catch {
+      // If resend failed, stop the cooldown so user can retry.
+      setResendCooldown(0);
       Alert.alert('Error', 'Failed to resend OTP. Please try again.');
     }
   };
@@ -262,7 +236,7 @@ export default function OtpEntryScreen() {
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
-      <LinearGradient
+      <View
         colors={[C.bg2, C.bg]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.45 }}
@@ -370,7 +344,7 @@ export default function OtpEntryScreen() {
             </Pressable>
           </View>
         </View>
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 }

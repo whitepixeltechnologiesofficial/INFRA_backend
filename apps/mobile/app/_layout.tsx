@@ -9,10 +9,6 @@ import { SpaceGrotesk_400Regular, SpaceGrotesk_500Medium } from '@expo-google-fo
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SessionProvider } from '@/providers/SessionProvider';
 
-export const unstable_settings = {
-  anchor: 'OnboardingScreen',
-};
-
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
@@ -36,8 +32,8 @@ export default function RootLayout() {
             animation: 'slide_from_right',
           }}
         >
-          {/* Onboarding screens */}
-          <Stack.Screen name="OnboardingScreen" options={{ headerShown: false }} />
+          {/* index.tsx = root splash screen (tap → legal-acceptance → phone-entry) */}
+          <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="phone-entry" options={{ headerShown: false }} />
           <Stack.Screen name="legal-acceptance" options={{ headerShown: false }} />
           <Stack.Screen name="otp-entry" options={{ headerShown: false }} />

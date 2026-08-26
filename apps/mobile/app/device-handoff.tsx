@@ -13,26 +13,26 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { mockOnboardingApi } from '@/api/mockOnboardingApi';
+import { useSession } from '@/hooks/useSession';
 
 export default function DeviceHandoffScreen() {
-  const params = useLocalSearchParams<{ phoneNumber: string }>();
+  const params = useLocalSearchParams<{ phoneNumber?: string; userId: string }>();
   const phoneNumber = params.phoneNumber || '';
+  const userId = params.userId || '';
   const [isLoading, setIsLoading] = useState(true);
+  const { createSession } = useSession();
 
   useEffect(() => {
-    // Perform the device handoff when screen loads
     const performHandoff = async () => {
       try {
-        await mockOnboardingApi.loginNewDevice(phoneNumber);
+        await createSession(userId);
         setIsLoading(false);
       } catch (error) {
-        // Even if handoff fails, allow user to continue
         setIsLoading(false);
       }
     };
     performHandoff();
-  }, [phoneNumber]);
+  }, [userId]);
 
   const handleContinue = () => {
     router.replace('/(tabs)');
