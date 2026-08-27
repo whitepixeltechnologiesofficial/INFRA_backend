@@ -5,14 +5,17 @@ import helmet from "helmet";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { API_VERSION, SOCKET_NAMESPACE } from "@wpt/shared";
+
 import onboardingRoutes from "./routes/onboarding.js";
 import profileRoutes from "./routes/profile.js";
 import debugRoutes from "./routes/debug.js";
+
 import {
   initSocketRegistry,
   registerSocket,
   unregisterSocket,
 } from "./ws/socket-registry.js";
+
 import { verifyAccessToken } from "./auth/jwt.js";
 
 const app = express();

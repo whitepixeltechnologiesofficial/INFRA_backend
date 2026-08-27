@@ -29,25 +29,20 @@ export default function DeviceHandoffScreen() {
       try {
         await createSession(userId);
 
-        // Store the formatted phone number for display in Settings/Chats
         if (phoneNumber) {
           const parsed = parsePhoneNumberFromString(phoneNumber);
-          const formatted = parsed
-            ? parsed.formatInternational()
-            : phoneNumber;
-
+          const formatted = parsed ? parsed.formatInternational() : phoneNumber;
           await SecureStore.setItemAsync('displayPhone', formatted);
         }
 
         setIsLoading(false);
       } catch {
-        // Even if handoff fails, allow user to continue
         setIsLoading(false);
       }
     };
 
     performHandoff();
-  }, [userId, phoneNumber]);
+  }, [userId, phoneNumber, createSession]);
 
   const handleContinue = () => {
     router.replace('/(tabs)');
@@ -113,7 +108,6 @@ const styles = StyleSheet.create({
     borderColor: '#3FC6B8',
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
   },
   sealDot: {
     width: 12,
