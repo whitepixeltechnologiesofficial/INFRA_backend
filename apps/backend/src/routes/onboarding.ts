@@ -34,6 +34,7 @@ import { users } from "../db/users-schema.js";
 import { otpVerifications } from "../db/otp-verifications-schema.js";
 import { smsOutbox } from "../db/sms-outbox-schema.js";
 import { pushForceLogout } from "../ws/socket-registry.js";
+import { deliverOtpCode } from "../sms/sender.js";
 import { requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { isValidE164 } from "../middleware/validation.js";
@@ -235,12 +236,9 @@ router.post(
       const codeHash = hashOtpCode(rawCode);
       const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
 
-      // Respond IMMEDIATELY after cleanup
-      res.json({ success: true });
-
-      // Fire-and-forget: delete old + insert new + SMS outbox
+      // Delete old row + insert new verification + queue SMS outbox row.
       // SECURITY: raw OTP code is NEVER stored in DB — only the SHA-256 hash.
-      Promise.all([
+      await Promise.all([
         db
           .delete(otpVerifications)
           .where(eq(otpVerifications.phoneNumber, phoneNumber)),
@@ -255,9 +253,13 @@ router.post(
           otpHash: codeHash,
           status: "pending",
         }),
-      ]).catch(() => {
-        // Response already sent — log nothing sensitive
-      });
+      ]);
+
+      // Deliver the code. Sends a real SMS when a provider (Twilio) is
+      // configured; otherwise prints the code to the server console for dev.
+      await deliverOtpCode(phoneNumber, rawCode);
+
+      res.json({ success: true });
     } catch (err) {
       console.error("POST /otp/send error");
       res.status(500).json({ error: "Internal server error" });
