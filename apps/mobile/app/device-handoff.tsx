@@ -26,7 +26,7 @@ export default function DeviceHandoffScreen() {
       try {
         await mockOnboardingApi.loginNewDevice(phoneNumber);
         setIsLoading(false);
-      } catch (error) {
+      } catch  {
         // Even if handoff fails, allow user to continue
         setIsLoading(false);
       }

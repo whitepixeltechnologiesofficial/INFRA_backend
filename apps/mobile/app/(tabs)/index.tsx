@@ -12,7 +12,6 @@ import {
   Platform,
   Modal,
   Alert,
-  Animated,
   Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
