@@ -70,9 +70,6 @@ export default function TabTwoScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  // Centralized colors based on the active theme.
-  // This keeps the light/dark colors in one place and
-  // makes the screen easier to maintain as the theme grows.
   const colors = {
     headerBg: isDark ? C.bg2 : '#f5f5f5',
     cardBg: isDark ? C.cardBg : '#ffffff',
@@ -86,9 +83,7 @@ export default function TabTwoScreen() {
 
   return (
     <LinearGradient
-      colors={
-        isDark ? [C.bg2, C.bg] : ['#f5f5f5', '#ffffff']
-      }
+      colors={isDark ? [C.bg2, C.bg] : ['#f5f5f5', '#ffffff']}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 0.45 }}
       style={styles.root}
