@@ -94,6 +94,9 @@ importers:
       '@expo-google-fonts/fraunces':
         specifier: ^0.4.1
         version: 0.4.1
+      '@expo-google-fonts/lato':
+        specifier: ^0.4.1
+        version: 0.4.1
       '@expo-google-fonts/space-grotesk':
         specifier: ^0.4.1
         version: 0.4.1
@@ -1338,6 +1341,9 @@ packages:
 
   '@expo-google-fonts/fraunces@0.4.1':
     resolution: {integrity: sha512-gYc9P92ObyWvz1rWPOeWSvVKyBFIuA8hgOdhvo4DSiPBaWLbFA6v8uLIEIBwW+0oWTlXbBzjeBReHQI2H7UNjQ==}
+
+  '@expo-google-fonts/lato@0.4.1':
+    resolution: {integrity: sha512-U2g1sOBFSNgmxhh/Ywgyi7Hx6T3UielX2nmZuP55wqndrIEyNX3HeUQIhhQDe2vZ+nvZI0Z2vTcVjmOn/BM9ow==}
 
   '@expo-google-fonts/space-grotesk@0.4.1':
     resolution: {integrity: sha512-ZVQYw4Ok/pgcSJiufP8oRZE3AVxS9xtmKEUfsurbHkHNdMc/GA1gDXP9G4Cr7KL4KqSc0haexR2TuMigotCn4Q==}
@@ -7047,6 +7053,8 @@ snapshots:
       levn: 0.4.1
 
   '@expo-google-fonts/fraunces@0.4.1': {}
+
+  '@expo-google-fonts/lato@0.4.1': {}
 
   '@expo-google-fonts/space-grotesk@0.4.1': {}
 

@@ -37,7 +37,7 @@ const COLORS = {
 const DEFAULT_ABOUT = "Hey there! I'm using ONB";
 
 export default function ProfileSetupScreen() {
-  const params = useLocalSearchParams<{ phoneNumber?: string }>();
+  const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();
   const [name, setName] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
   const [about, setAbout] = useState(DEFAULT_ABOUT);
@@ -126,7 +126,7 @@ export default function ProfileSetupScreen() {
     }
   };
 
-  const displayPhone = params.phoneNumber || '';
+  const displayPhone = params.displayPhone || params.phoneNumber || '';
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>

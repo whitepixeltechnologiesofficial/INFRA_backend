@@ -44,8 +44,9 @@ function formatClock(totalSeconds: number): string {
 }
 
 export default function OtpEntryScreen() {
-  const params = useLocalSearchParams<{ phoneNumber: string }>();
+  const params = useLocalSearchParams<{ phoneNumber: string; displayPhone?: string }>();
   const phoneNumber = params.phoneNumber || '';
+  const displayPhone = params.displayPhone || '';
 
   const [otp, setOtp] = useState<string[]>(Array(BOXES).fill(''));
   const [isLocked, setIsLocked] = useState(false);
@@ -131,6 +132,7 @@ export default function OtpEntryScreen() {
             SecureStore.setItemAsync('deviceId', deviceId),
             SecureStore.setItemAsync('accessToken', result.accessToken),
             SecureStore.setItemAsync('refreshToken', result.refreshToken),
+            SecureStore.setItemAsync('displayPhone', displayPhone),
           ]);
 
           if (result.routing === 'chats') {
@@ -138,7 +140,7 @@ export default function OtpEntryScreen() {
           } else {
             router.replace({
               pathname: '/profile-setup',
-              params: { phoneNumber },
+              params: { phoneNumber, displayPhone },
             });
           }
         } else if (result.status === 'wrong_code') {
@@ -169,7 +171,7 @@ export default function OtpEntryScreen() {
         setIsVerifying(false);
       }
     },
-    [isLocked, lockoutSeconds, phoneNumber, runShake],
+    [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake],
   );
 
   // --- OTP input handlers ---
@@ -230,9 +232,10 @@ export default function OtpEntryScreen() {
   const clock = useMemo(() => formatClock(expirySeconds), [expirySeconds]);
 
   const displayNumber = useMemo(() => {
+    if (displayPhone) return displayPhone;
     const parsed = parsePhoneNumberFromString(phoneNumber);
     return parsed ? parsed.formatInternational() : phoneNumber;
-  }, [phoneNumber]);
+  }, [phoneNumber, displayPhone]);
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>

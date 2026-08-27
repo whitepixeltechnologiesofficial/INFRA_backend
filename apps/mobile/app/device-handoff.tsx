@@ -14,6 +14,8 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSession } from '@/hooks/useSession';
+import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
+import * as SecureStore from 'expo-secure-store';
 
 export default function DeviceHandoffScreen() {
   const params = useLocalSearchParams<{ phoneNumber?: string; userId: string }>();
@@ -26,13 +28,19 @@ export default function DeviceHandoffScreen() {
     const performHandoff = async () => {
       try {
         await createSession(userId);
+        // Store the formatted phone number for display in Settings/Chats
+        if (phoneNumber) {
+          const parsed = parsePhoneNumberFromString(phoneNumber);
+          const formatted = parsed ? parsed.formatInternational() : phoneNumber;
+          await SecureStore.setItemAsync('displayPhone', formatted);
+        }
         setIsLoading(false);
       } catch (error) {
         setIsLoading(false);
       }
     };
     performHandoff();
-  }, [userId]);
+  }, [userId, phoneNumber]);
 
   const handleContinue = () => {
     router.replace('/(tabs)');

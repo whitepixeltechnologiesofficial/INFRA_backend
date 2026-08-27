@@ -194,7 +194,7 @@ export default function PhoneEntryScreen() {
       ]);
       router.push({
         pathname: '/otp-entry',
-        params: { phoneNumber: e164 },
+        params: { phoneNumber: e164, displayPhone: phone },
       });
     } catch {
       Alert.alert('Error', 'Failed to send OTP. Please try again.');

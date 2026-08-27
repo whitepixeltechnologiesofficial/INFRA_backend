@@ -29,6 +29,7 @@ export const useSession = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [displayPhone, setDisplayPhone] = useState<string | null>(null);
   const [sessionValid, setSessionValid] = useState(true);
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
@@ -60,6 +61,8 @@ export const useSession = () => {
       if (storedUserId && storedDeviceId && storedAccessToken) {
         setUserId(storedUserId);
         setDeviceId(storedDeviceId);
+        const storedDisplayPhone = await SecureStore.getItemAsync('displayPhone');
+        if (storedDisplayPhone) setDisplayPhone(storedDisplayPhone);
         await validateSession(storedDeviceId);
       } else if (storedUserId || storedDeviceId) {
         await SecureStore.deleteItemAsync('userId');
@@ -106,9 +109,11 @@ export const useSession = () => {
     await SecureStore.deleteItemAsync('deviceId');
     await SecureStore.deleteItemAsync('accessToken');
     await SecureStore.deleteItemAsync('refreshToken');
+    await SecureStore.deleteItemAsync('displayPhone');
     setIsAuthenticated(false);
     setUserId(null);
     setDeviceId(null);
+    setDisplayPhone(null);
     router.replace('/phone-entry');
   };
 
@@ -160,9 +165,11 @@ export const useSession = () => {
     await SecureStore.deleteItemAsync('deviceId');
     await SecureStore.deleteItemAsync('accessToken');
     await SecureStore.deleteItemAsync('refreshToken');
+    await SecureStore.deleteItemAsync('displayPhone');
     setIsAuthenticated(false);
     setUserId(null);
     setDeviceId(null);
+    setDisplayPhone(null);
     setSessionValid(false);
     router.replace('/phone-entry');
   };
@@ -172,6 +179,7 @@ export const useSession = () => {
     isAuthenticated,
     userId,
     deviceId,
+    displayPhone,
     sessionValid,
     sessionMessage,
     createSession,
