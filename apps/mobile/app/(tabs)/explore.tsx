@@ -401,13 +401,13 @@ const styles = StyleSheet.create({
 
   headerTitle: {
     fontSize: 36,
-    fontFamily: 'Fraunces-Black',
+    fontFamily: 'Lato-Black',
     letterSpacing: 2,
   },
 
   headerSubtitle: {
     fontSize: 14,
-    fontFamily: 'SpaceGrotesk-Regular',
+    fontFamily: 'Lato-Regular',
     letterSpacing: 1,
     marginTop: 4,
   },
@@ -421,13 +421,13 @@ const styles = StyleSheet.create({
 
   greetingText: {
     fontSize: 22,
-    fontFamily: 'Fraunces-Black',
+    fontFamily: 'Lato-Black',
     marginBottom: 8,
   },
 
   greetingSubtext: {
     fontSize: 14,
-    fontFamily: 'SpaceGrotesk-Regular',
+    fontFamily: 'Lato-Regular',
     lineHeight: 22,
   },
 
@@ -456,13 +456,13 @@ const styles = StyleSheet.create({
 
   featureTitle: {
     fontSize: 16,
-    fontFamily: 'SpaceGrotesk-Medium',
+    fontFamily: 'Lato-Bold',
     flex: 1,
   },
 
   featureDescription: {
     fontSize: 13,
-    fontFamily: 'SpaceGrotesk-Regular',
+    fontFamily: 'Lato-Regular',
     lineHeight: 20,
     marginBottom: 12,
   },
@@ -492,7 +492,7 @@ const styles = StyleSheet.create({
 
   platformText: {
     fontSize: 12,
-    fontFamily: 'SpaceGrotesk-Medium',
+    fontFamily: 'Lato-Bold',
   },
 
   linkContainer: {
@@ -504,7 +504,7 @@ const styles = StyleSheet.create({
 
   linkText: {
     fontSize: 13,
-    fontFamily: 'SpaceGrotesk-Medium',
+    fontFamily: 'Lato-Bold',
   },
 
   footerContainer: {
@@ -516,7 +516,7 @@ const styles = StyleSheet.create({
 
   footerText: {
     fontSize: 13,
-    fontFamily: 'SpaceGrotesk-Regular',
+    fontFamily: 'Lato-Regular',
   },
 
   footerBadges: {
@@ -535,7 +535,7 @@ const styles = StyleSheet.create({
 
   badgeText: {
     fontSize: 10,
-    fontFamily: 'SpaceGrotesk-Medium',
+    fontFamily: 'Lato-Bold',
     letterSpacing: 0.5,
   },
 });
