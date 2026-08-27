@@ -5,7 +5,6 @@ import helmet from "helmet";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { API_VERSION, SOCKET_NAMESPACE } from "@wpt/shared";
-import { supabase } from "./lib/supabase.js";
 
 import onboardingRoutes from "./routes/onboarding.js";
 import profileRoutes from "./routes/profile.js";
