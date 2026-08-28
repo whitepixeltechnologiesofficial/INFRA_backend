@@ -30,18 +30,5 @@ packages/**/.env
 
 # macOS
 .DS_Store
-
-# Mobile secrets
-apps/mobile/android/app/google-services.json
-apps/mobile/ios/GoogleService-Info.plist
-
-# IDE
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
-.idea/
-
-# OS / editor temporary files
-*.swp
-*.swo
-*~
+*.log
+JARVIS.md
