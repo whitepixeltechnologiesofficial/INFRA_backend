@@ -39,6 +39,7 @@ export const reportEvidence = pgTable(
       .notNull()
       .defaultNow(),
     decryptedMessageSnapshot: jsonb("decrypted_message_snapshot"),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [
     index("idx_report_evidence_report_id").on(table.reportId),

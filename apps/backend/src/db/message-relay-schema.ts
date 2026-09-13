@@ -52,6 +52,7 @@ export const messageRelay = pgTable(
       .defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    mediaPath: text("media_path"),
     replyToId: uuid("reply_to_id"),
     voiceSegmentGroupId: uuid("voice_segment_group_id"),
   },
