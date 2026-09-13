@@ -1,12 +1,15 @@
+import React from "react";
+import type { ReactNode } from "react";
+
 export const metadata = {
   title: "WPT",
 };
 
 export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>): React.JSX.Element {
+children,
+}: {
+  children: ReactNode;
+}>): React.ReactElement {
   return (
     <html lang="en">
       <body>{children}</body>

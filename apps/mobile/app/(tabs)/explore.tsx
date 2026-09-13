@@ -98,7 +98,7 @@ export default function TabTwoScreen() {
                   Explore
                 </ThemedText>
                 <ThemedText style={[styles.headerSubtitle, { color: isDark ? C.inkDim : '#666666' }]}>
-                  Discover what&apos;s possible
+Discover what&apos;s possible
                 </ThemedText>
               </View>
             </View>
