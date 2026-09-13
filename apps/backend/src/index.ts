@@ -5,17 +5,14 @@ import helmet from "helmet";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { API_VERSION, SOCKET_NAMESPACE } from "@wpt/shared";
-
 import onboardingRoutes from "./routes/onboarding.js";
 import profileRoutes from "./routes/profile.js";
-import debugRoutes from "./routes/debug.js";
-
+import pushRoutes from "./routes/push.js";
 import {
   initSocketRegistry,
   registerSocket,
   unregisterSocket,
 } from "./ws/socket-registry.js";
-
 import { verifyAccessToken } from "./auth/jwt.js";
 
 const app = express();
@@ -40,21 +37,13 @@ app.use(
 // ── Body parsing with size limit (100 KB max) ──
 app.use(express.json({ limit: "100kb" }));
 
-// Convenience only — lets a bare `localhost:4000` visit in a browser
-// show something meaningful instead of Express's default 404. The real
-// health-check clients (monitoring, Render, etc.) should use is the
-// versioned route below, not this one.
-app.get("/", (_req, res) => {
-  res.json({ status: "ok", service: "@wpt/backend" });
-});
-
 app.get(`/api/${API_VERSION}/health`, (_req, res) => {
   res.json({ ok: true });
 });
 
 app.use(`/api/${API_VERSION}/onboarding`, onboardingRoutes);
 app.use(`/api/${API_VERSION}/profile`, profileRoutes);
-app.use(`/api/${API_VERSION}/debug`, debugRoutes);
+app.use(`/api/${API_VERSION}/push`, pushRoutes);
 
 const httpServer = createServer(app);
 

@@ -15,8 +15,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // §7.3 — Connect socket.io and listen for force_logout.
   // This is active the entire time the user is authenticated.
   // When a force_logout arrives (handoff on another device),
-  // useForceLogout clears SecureStore and navigates to phone-entry.
-  useForceLogout(session.userId, session.deviceId);
+  // useForceLogout routes through the shared silentLogout so the
+  // cutoff is silent, de-duplicated, and consistent with the
+  // session-check path.
+  useForceLogout(session.userId, session.deviceId, session.silentLogout);
 
   return (
     <SessionContext.Provider value={session}>

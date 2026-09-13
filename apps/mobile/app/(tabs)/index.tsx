@@ -17,21 +17,69 @@ import {
   Linking,
   RefreshControl,
   Animated as RNAnimated,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { useThemeContext } from '@/providers/ThemeProvider';
 import { useSessionContext } from '@/providers/SessionProvider';
 import * as Contacts from 'expo-contacts';
 import type { ThemeColors } from '@/lib/theme';
 
+import { PermissionBanner } from '@/components/permission-banner';
+import { normalizeToE164, hashContactNumber } from '@/lib/contact-hash';
+import { contactSyncApi, GLOBAL_SALT } from '@/api/mockContactSyncApi';
+import { onIncomingMessage, onChatOpened } from '@/lib/unread';
+
+
+import {
+  requestRecordingPermissionsAsync,
+  getRecordingPermissionsAsync,
+  AudioModule,
+  RecordingPresets,
+  type AudioRecorder,
+} from 'expo-audio';
+import {
+  classifyMicGranted,
+  isUsableVoiceNote,
+  formatVoiceDuration,
+  buildVoiceNoteDraft,
+  decideRecordAction,
+  type MicGate,
+  type VoiceNoteDraft,
+} from '@/lib/voice-note';
+import {
+  requestCameraPermission,
+  checkCameraState,
+  requestPhotosPermission,
+  checkPhotosState,
+  classifyFeatureGate,
+  decideAttachAction,
+  type FeatureGate,
+} from '@/lib/permissions';
+
 const FONTS = {
   heading: 'Lato-Black',
   body: 'Lato-Regular',
   bodyMedium: 'Lato-Bold',
 };
+
+// NOTIFICATIONS-DENIED VERIFY knob handle (Scenario 3.4/3.5 denied). The
+// in-app unread state lives in this screen's React state, so — unlike the
+// grant-path `simulateIncomingPush` (a pure lib export) — the deny-path knob
+// is registered here and reached through `getSimulateIncomingMessageKnob()`
+// from a devtools context to confirm live in-app badges with no push.
+export type SimulateIncomingMessageResult = { chatId: string; opened: boolean; unreadTotal: number };
+type SimulateIncomingMessageFn = () => SimulateIncomingMessageResult;
+
+let simulateIncomingMessageHandle: SimulateIncomingMessageFn | null = null;
+
+export function getSimulateIncomingMessageKnob(): SimulateIncomingMessageFn | null {
+  return simulateIncomingMessageHandle;
+}
 
 interface Message {
   id: string;
@@ -40,6 +88,10 @@ interface Message {
   time: string;
   dateKey: string;
   status?: 'sent' | 'delivered' | 'read';
+  kind?: 'voice' | 'image';
+  audioUri?: string;
+  durationSec?: number;
+  imageUri?: string;
 }
 
 interface Contact {
@@ -56,7 +108,6 @@ interface Chat {
   messages: Message[];
   lastMessage?: string;
   lastMessageTime?: string;
-  unreadCount?: number;
 }
 
 type ChatEntry = { message: Message } | { dateKey: string };
@@ -171,10 +222,12 @@ function Avatar({
 function ChatItem({
   chat,
   colors,
+  unread,
   onPress,
 }: {
   chat: Chat;
   colors: ThemeColors;
+  unread: number;
   onPress: () => void;
 }) {
   return (
@@ -189,7 +242,7 @@ function ChatItem({
           <Text style={[s.chatName, { color: colors.text }]} numberOfLines={1}>
             {chat.contact.name}
           </Text>
-          <Text style={[s.chatTime, { color: chat.unreadCount ? colors.accent : colors.textDim }]}>
+          <Text style={[s.chatTime, { color: unread > 0 ? colors.accent : colors.textDim }]}>
             {chat.lastMessageTime || ''}
           </Text>
         </View>
@@ -197,9 +250,9 @@ function ChatItem({
           <Text style={[s.chatMessage, { color: colors.textDim }]} numberOfLines={1}>
             {chat.lastMessage || 'No messages yet'}
           </Text>
-          {chat.unreadCount && chat.unreadCount > 0 ? (
+          {unread > 0 ? (
             <View style={[s.unreadBadge, { backgroundColor: colors.accent }]}>
-              <Text style={s.unreadText}>{chat.unreadCount}</Text>
+              <Text style={s.unreadText}>{unread}</Text>
             </View>
           ) : null}
         </View>
@@ -226,6 +279,7 @@ function ContactPickerModal({
   visible,
   onClose,
   onSelectContact,
+  onManualChat,
   loading,
   contacts,
   permissionDenied,
@@ -236,6 +290,7 @@ function ContactPickerModal({
   visible: boolean;
   onClose: () => void;
   onSelectContact: (contact: Contact) => void;
+  onManualChat: (rawNumber: string) => Promise<string | null>;
   loading: boolean;
   contacts: Contact[];
   permissionDenied: boolean;
@@ -244,6 +299,9 @@ function ContactPickerModal({
   colors: ThemeColors;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [manualNumber, setManualNumber] = useState('');
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualChecking, setManualChecking] = useState(false);
 
   const filtered = contacts.filter(
     (c) =>
@@ -264,6 +322,27 @@ function ContactPickerModal({
     </TouchableOpacity>
   );
 
+  const handleManualStart = async () => {
+    if (manualChecking) return;
+    const raw = manualNumber.trim();
+    if (!raw) return;
+    setManualChecking(true);
+    setManualError(null);
+    try {
+      const error = await onManualChat(raw);
+      if (error) {
+        setManualError(error);
+        return;
+      }
+      setManualNumber('');
+      onClose();
+    } catch {
+      setManualError('Could not start a chat with this number. Please try again.');
+    } finally {
+      setManualChecking(false);
+    }
+  };
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent={false}>
       <SafeAreaView style={[s.modalContainer, { backgroundColor: colors.bg }]}>
@@ -276,11 +355,51 @@ function ContactPickerModal({
         </View>
 
         {permissionDenied ? (
-          <View style={s.modalEmpty}>
-            <Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
-            <Text style={[s.modalEmptyText, { color: colors.textDim }]}>Permission denied</Text>
-            <TouchableOpacity style={[s.emptyButton, { backgroundColor: colors.accent }]} onPress={onOpenSettings}>
-              <Text style={[s.emptyButtonText, { color: colors.bg }]}>Open Settings</Text>
+          // CONTACTS-DENIED STATE (Scenario 3.2/3.3, PRD §5.4, Tech Arch §14.3):
+          // no synced contact list exists to show. A session-dismissible banner
+          // explains the gap, and manual entry stays fully functional — reusing
+          // the same matching endpoint PERM-2.3 uses with a one-item batch.
+          <View style={s.modalDenied}>
+            <PermissionBanner permissionId="contacts" onOpenSettings={onOpenSettings} />
+
+            <Text style={[s.manualTitle, { color: colors.text }]}>Start a chat by number</Text>
+            <Text style={[s.manualHint, { color: colors.textDim }]}>
+              Enter a phone number. It will be matched against registered users
+              before a chat can start.
+            </Text>
+
+            <View style={[s.manualInputRow, { backgroundColor: colors.searchBg, borderColor: colors.border }]}>
+              <Ionicons name="call-outline" size={18} color={colors.textDim} />
+              <TextInput
+                style={[s.manualInput, { color: colors.text }]}
+                value={manualNumber}
+                onChangeText={(t) => { setManualNumber(t); if (manualError) setManualError(null); }}
+                placeholder="+1 415 555 2671"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="phone-pad"
+                autoCapitalize="none"
+                editable={!manualChecking}
+              />
+            </View>
+
+            {manualError ? (
+              <Text style={[s.manualError, { color: colors.error }]}>{manualError}</Text>
+            ) : null}
+
+            <TouchableOpacity
+              style={[s.manualStartButton, { backgroundColor: colors.accent }]}
+              onPress={handleManualStart}
+              disabled={manualChecking}
+              activeOpacity={0.7}
+            >
+              {manualChecking ? (
+                <ActivityIndicator color={colors.bg} size="small" />
+              ) : (
+                <>
+                  <Text style={[s.manualStartText, { color: colors.bg }]}>START CHAT</Text>
+                  <Ionicons name="arrow-forward" size={18} color={colors.bg} />
+                </>
+              )}
             </TouchableOpacity>
           </View>
         ) : loading ? (
@@ -346,9 +465,33 @@ function MessageBubble({
           isGrouped && !item.sent && { borderTopLeftRadius: 16 },
         ]}
       >
-        <Text style={[s.messageText, { color: item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text }]}>
-          {item.text}
-        </Text>
+        {item.kind === 'image' ? (
+          <Image
+            source={{ uri: item.imageUri }}
+            style={[s.messageImage, { borderColor: item.sent ? 'rgba(0,0,0,0.1)' : colors.incomingBubble }]}
+          />
+        ) : item.kind === 'voice' ? (
+          <View style={s.voiceNoteRow}>
+            <Ionicons
+              name="mic"
+              size={18}
+              color={item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text}
+              style={{ marginRight: 6 }}
+            />
+            <Text
+              style={[
+                s.voiceNoteText,
+                { color: item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text },
+              ]}
+            >
+              {typeof item.durationSec === 'number' ? formatVoiceDuration(item.durationSec) : '0:00'}
+            </Text>
+          </View>
+        ) : (
+          <Text style={[s.messageText, { color: item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text }]}>
+            {item.text}
+          </Text>
+        )}
         <View style={s.messageMeta}>
           <Text style={[s.messageTime, { color: item.sent ? 'rgba(0,0,0,0.45)' : colors.textDim }]}>
             {item.time}
@@ -429,9 +572,118 @@ function ChatView({
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
+  const [micGate, setMicGate] = useState<MicGate>('undetermined');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyboardHeight = useKeyboardHeight();
+
+  // MIC NO-PREINIT (PERM-2.7): the OS recorder is created LAZILY — only once
+  // the microphone is confirmed granted AND the user presses/holds the mic. It
+  // is never constructed at mount or while denied/undetermined, so no
+  // microphone functionality exists before permission is confirmed. The
+  // recorder is released on unmount and reused for subsequent recordings.
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  const ensureRecorder = useCallback((): AudioRecorder | null => {
+    if (recorderRef.current) return recorderRef.current;
+    // expo-audio's web shim names the recorder class differently; the mic
+    // feature is native-only, so on web there is nothing to construct.
+    const RecorderCtor = (AudioModule as unknown as {
+      AudioRecorder?: typeof AudioRecorder;
+    }).AudioRecorder;
+    if (typeof RecorderCtor !== 'function') return null;
+    recorderRef.current = new RecorderCtor(RecordingPresets.HIGH_QUALITY);
+    return recorderRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.release();
+      recorderRef.current = null;
+    };
+  }, []);
+
+  // Live recording timer: poll `currentTime` while recording so the duration
+  // shown in the input bar stays live even though the recorder is a ref.
+  const [, setRecTick] = useState(0);
+  useEffect(() => {
+    if (!isRecording) return;
+    const t = setInterval(() => setRecTick((n) => n + 1), 250);
+    return () => clearInterval(t);
+  }, [isRecording]);
+
+  // MIC-STATE — the OS is the source of truth for microphone permission, never
+  // stale app state. Re-query the actual OS permission on every foreground
+  // return so that granting in Settings is picked up immediately (no restart,
+  // no reinstall) and clearing the stale denied state. Registered once; the
+  // mounted recorder remains uninitialized — recording still waits for the
+  // user's next explicit Voice Note action.
+  const syncMicGate = useCallback(async () => {
+    let gate: MicGate;
+    try {
+      const res = await getRecordingPermissionsAsync();
+      gate = classifyMicGranted(res.granted, res.status);
+    } catch {
+      gate = 'undetermined';
+    }
+    setMicGate(gate);
+  }, []);
+
+  useEffect(() => {
+    syncMicGate();
+  }, [syncMicGate]);
+
+  // CAMERA/PHOTOS gates — same source-of-truth rule as the mic: cache the
+  // CURRENT OS permission (checked on mount and re-queried on every foreground
+  // return, so granting in Settings is picked up without a restart). A cached
+  // 'granted' lets the feature launch immediately; any other state goes through
+  // the OS permission request (a native dialog when the OS was never asked).
+  const [cameraGate, setCameraGate] = useState<FeatureGate>('undetermined');
+  const [photosGate, setPhotosGate] = useState<FeatureGate>('undetermined');
+
+  const syncCameraGate = useCallback(async () => {
+    let gate: FeatureGate;
+    try {
+      gate = classifyFeatureGate(await checkCameraState());
+    } catch {
+      gate = 'undetermined';
+    }
+    setCameraGate(gate);
+  }, []);
+
+  const syncPhotosGate = useCallback(async () => {
+    let gate: FeatureGate;
+    try {
+      gate = classifyFeatureGate(await checkPhotosState());
+    } catch {
+      gate = 'undetermined';
+    }
+    setPhotosGate(gate);
+  }, []);
+
+  useEffect(() => {
+    syncCameraGate();
+  }, [syncCameraGate]);
+
+  useEffect(() => {
+    syncPhotosGate();
+  }, [syncPhotosGate]);
+
+  // FOREGROUND RE-QUERY (PERM-STATE): whenever the app returns from the
+  // background — e.g. the OS Settings after a denied permission was changed —
+  // ALWAYS re-read the actual OS permission state for every feature. React
+  // state is never the source of truth; stale previous results are discarded.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        syncMicGate();
+        syncCameraGate();
+        syncPhotosGate();
+      }
+    });
+    return () => sub.remove();
+  }, [syncMicGate, syncCameraGate, syncPhotosGate]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -505,6 +757,257 @@ function ChatView({
       }, 300);
     }, 1000 + Math.random() * 1500);
   };
+
+  const sendVoiceNote = useCallback(
+    (draft: VoiceNoteDraft) => {
+      const now = new Date();
+      const newMsg: Message = {
+        id: draft.id,
+        text: '',
+        sent: true,
+        time: draft.time,
+        dateKey: getDateKey(now),
+        status: 'sent',
+        kind: 'voice',
+        audioUri: draft.audioUri,
+        durationSec: draft.durationSec,
+      };
+      const updatedMessages = [...chat.messages, newMsg];
+      setChatMessages(chat.id, updatedMessages);
+      setTimeout(() => {
+        setChatMessages(
+          chat.id,
+          updatedMessages.map((m) => (m.id === newMsg.id ? { ...m, status: 'delivered' } : m)),
+        );
+      }, 600);
+    },
+    [chat, setChatMessages],
+  );
+
+  const promptMicSettings = useCallback(() => {
+    Alert.alert(
+      'Microphone access needed',
+      "To record a voice note, allow Microphone access in your device's Settings.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Settings', onPress: () => Linking.openSettings() },
+      ],
+    );
+  }, []);
+
+  // CONTEXTUAL CAMERA (PERM-2.9/2.10): the camera is ONLY initialized after the
+  // permission is granted — never before. Denial guides to Settings and records
+  // nothing; the rest of chat keeps working.
+  const promptCameraSettings = useCallback(() => {
+    Alert.alert(
+      'Camera access needed',
+      "To send a photo, allow Camera access in your device's Settings.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Settings', onPress: () => Linking.openSettings() },
+      ],
+    );
+  }, []);
+
+  const sendImage = useCallback(
+    (uri: string) => {
+      const now = new Date();
+      const newMsg: Message = {
+        id: `img${Date.now()}`,
+        text: '',
+        sent: true,
+        time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        dateKey: getDateKey(now),
+        status: 'sent',
+        kind: 'image',
+        imageUri: uri,
+      };
+      const updatedMessages = [...chat.messages, newMsg];
+      setChatMessages(chat.id, updatedMessages);
+      setTimeout(() => {
+        setChatMessages(
+          chat.id,
+          updatedMessages.map((m) => (m.id === newMsg.id ? { ...m, status: 'delivered' } : m)),
+        );
+      }, 600);
+    },
+    [chat, setChatMessages],
+  );
+
+  const handleAttachCamera = useCallback(async () => {
+    try {
+      // THREE-STATE (PERM-2.9): granted -> launch immediately; undetermined ->
+      // native OS request first; denied -> guidance + Settings. Settings is
+      // NEVER shown for a first-time request while the OS can still be asked.
+      let action = decideAttachAction(cameraGate);
+      if (action === 'ask') {
+        const res = await requestCameraPermission();
+        action = decideAttachAction(cameraGate, res);
+      }
+      if (action !== 'open') {
+        promptCameraSettings();
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        sendImage(result.assets[0].uri);
+      }
+    } catch {
+      Alert.alert('Error', 'Could not take a photo.');
+    }
+  }, [cameraGate, sendImage, promptCameraSettings]);
+
+  // CONTEXTUAL PHOTOS/FILES (PERM-2.11/2.12): the picker is opened ONLY after
+  // the Photos/Files permission is granted.
+  const promptPhotosSettings = useCallback(() => {
+    Alert.alert(
+      'Media access needed',
+      "To send a photo, allow Media access in your device's Settings.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Settings', onPress: () => Linking.openSettings() },
+      ],
+    );
+  }, []);
+
+  const handleAttachGallery = useCallback(async () => {
+    try {
+      // THREE-STATE (PERM-2.11): granted/limited -> launch immediately;
+      // undetermined -> native OS request first; denied -> guidance + Settings.
+      // Settings is NEVER shown for a first-time request while the OS can still
+      // be asked. iOS `limited` maps to granted in the permission helpers.
+      let action = decideAttachAction(photosGate);
+      if (action === 'ask') {
+        const res = await requestPhotosPermission();
+        action = decideAttachAction(photosGate, res);
+      }
+      if (action !== 'open') {
+        promptPhotosSettings();
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        sendImage(result.assets[0].uri);
+      }
+    } catch {
+      Alert.alert('Error', 'Could not pick an image.');
+    }
+  }, [photosGate, sendImage, promptPhotosSettings]);
+
+  // Attachment chooser: offers camera (Camera permission) and gallery (Photos/
+  // Files permission) as separate, contextual requests.
+  const openAttachmentSheet = useCallback(() => {
+    Alert.alert(
+      'Attach',
+      'Choose an option',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Camera', onPress: handleAttachCamera },
+        { text: 'Gallery', onPress: handleAttachGallery },
+      ],
+    );
+  }, [handleAttachCamera, handleAttachGallery]);
+
+  const tryStartRecording = useCallback(async () => {
+    setRecordingError(null);
+    const action = decideRecordAction(micGate);
+    if (action === 'denied') {
+      // PERM-2.7 — denied/blocked: never record; direct the user to Settings.
+      promptMicSettings();
+      return;
+    }
+    if (action === 'request') {
+      // undetermined — first ask (grant path, Scenario 3.6/3.7).
+      let res: { granted: boolean; status: string };
+      try {
+        res = await requestRecordingPermissionsAsync();
+      } catch {
+        setRecordingError("Couldn't start recording.");
+        return;
+      }
+      const gate = classifyMicGranted(res.granted, res.status);
+      setMicGate(gate);
+      if (decideRecordAction(gate) !== 'record') {
+        promptMicSettings();
+        return;
+      }
+    }
+    // Only reachable when the microphone is granted — record() is never called
+    // while denied, so no audio is captured behind the permission check. The
+    // recorder is created here, at the very last moment before capture.
+    const recorder = ensureRecorder();
+    if (!recorder) {
+      setRecordingError("Couldn't start recording.");
+      return;
+    }
+    try {
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+    } catch {
+      setRecordingError("Couldn't start recording.");
+      return;
+    }
+    setIsRecording(true);
+  }, [micGate, ensureRecorder, promptMicSettings]);
+
+  const tryStopRecording = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    try {
+      await recorder.stop();
+    } catch {
+      // ignore cleanup errors
+    }
+    setIsRecording(false);
+  }, []);
+
+  const stopAndDiscard = useCallback(async () => {
+    await tryStopRecording();
+  }, [tryStopRecording]);
+
+  const stopAndSend = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      setRecordingError("Couldn't finish the recording.");
+      setIsRecording(false);
+      return;
+    }
+    let uri: string | null = null;
+    let durationSec = 0;
+    try {
+      await recorder.stop();
+      uri = recorder.uri;
+      durationSec = recorder.currentTime;
+    } catch {
+      setRecordingError("Couldn't finish the recording.");
+    }
+    setIsRecording(false);
+    if (uri && isUsableVoiceNote(durationSec)) {
+      sendVoiceNote(buildVoiceNoteDraft(uri, durationSec));
+    } else if (uri) {
+      setRecordingError('Voice note too short to send.');
+    }
+  }, [sendVoiceNote]);
+
+  // Press-and-hold to record (Scenarios 3.6/3.7): holding the mic starts
+  // recording on grant, releasing sends. When denied it never records and
+  // instead prompts the user to enable the permission in Settings.
+  const handleMicPressIn = useCallback(() => {
+    if (isRecording) return;
+    tryStartRecording();
+  }, [isRecording, tryStartRecording]);
+
+  const handleMicPressOut = useCallback(() => {
+    if (isRecording) {
+      stopAndSend();
+    }
+  }, [isRecording, stopAndSend]);
 
   const handleScroll = (e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -584,31 +1087,61 @@ function ChatView({
         )}
 
         <View style={[s.inputBar, { backgroundColor: colors.bg2, borderTopColor: colors.border, paddingBottom: keyboardHeight > 0 ? keyboardHeight + 8 : 12 }]}>
-          <TouchableOpacity style={s.attachButton}>
-            <Ionicons name="add-circle-outline" size={28} color={colors.textDim} />
-          </TouchableOpacity>
-          <View style={[s.inputFieldContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
-            <TextInput
-              style={[s.inputField, { color: colors.text }]}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.textMuted}
-              value={inputText}
-              onChangeText={setInputText}
-              returnKeyType="send"
-              onSubmitEditing={sendMessage}
-              multiline
-            />
-          </View>
-          <TouchableOpacity
-            style={[s.sendButton, { backgroundColor: hasText ? colors.accent : colors.accentDim }]}
-            onPress={hasText ? sendMessage : undefined}
-          >
-            <Ionicons
-              name={hasText ? 'send' : 'mic'}
-              size={20}
-              color={hasText ? colors.bg : colors.accent}
-            />
-          </TouchableOpacity>
+          {isRecording ? (
+            <>
+              <TouchableOpacity style={s.attachButton} onPress={stopAndDiscard}>
+                <Ionicons name="close-circle" size={28} color={colors.textDim} />
+              </TouchableOpacity>
+              <View style={[s.recordingState, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+                <View style={[s.recordingDot, { backgroundColor: colors.accent }]} />
+                <Text style={[s.recordingText, { color: colors.text }]}>Recording…</Text>
+                <Text style={[s.recordingTimer, { color: colors.textDim }]}>
+                  {formatVoiceDuration(recorderRef.current?.currentTime ?? 0)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[s.sendButton, { backgroundColor: colors.accent }]}
+                onPress={stopAndSend}
+              >
+                <Ionicons name="send" size={20} color={colors.bg} />
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <TouchableOpacity style={s.attachButton} onPress={openAttachmentSheet}>
+                <Ionicons name="add-circle-outline" size={28} color={colors.textDim} />
+              </TouchableOpacity>
+              <View style={[s.inputFieldContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+                <TextInput
+                  style={[s.inputField, { color: colors.text }]}
+                  placeholder="Type a message..."
+                  placeholderTextColor={colors.textMuted}
+                  value={inputText}
+                  onChangeText={setInputText}
+                  returnKeyType="send"
+                  onSubmitEditing={sendMessage}
+                  multiline
+                />
+                {recordingError ? (
+                  <Text style={[s.recordingError, { color: colors.danger }]} numberOfLines={2}>
+                    {recordingError}
+                  </Text>
+                ) : null}
+              </View>
+              <TouchableOpacity
+                style={[s.sendButton, { backgroundColor: hasText ? colors.accent : colors.accentDim }]}
+                onPress={hasText ? sendMessage : undefined}
+                onPressIn={!hasText ? handleMicPressIn : undefined}
+                onPressOut={!hasText ? handleMicPressOut : undefined}
+              >
+                <Ionicons
+                  name={hasText ? 'send' : 'mic'}
+                  size={20}
+                  color={hasText ? colors.bg : colors.accent}
+                />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
     </View>
@@ -626,6 +1159,11 @@ export default function ChatListScreen() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [draftChat, setDraftChat] = useState<Chat | null>(null);
 
+  // NOTIFICATIONS-DENIED unread state (Scenario 3.4/3.5 denied): a separate
+  // chatId -> count map so live in-app badges stay accurate even though no push
+  // can fire. Accounting lives in lib/unread.ts (pure + node-verifiable).
+  const [unreadByChat, setUnreadByChat] = useState<Record<string, number>>({});
+
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
@@ -641,6 +1179,15 @@ export default function ChatListScreen() {
 
       setDraftChat((prev) => (prev && prev.id === chatId ? null : prev));
 
+      // In-app unread accuracy (NOTIFICATIONS-DENIED, Scenario 3.4/3.5): a
+      // message that lands on a chat the user is not currently viewing bumps
+      // that chat's badge — live, with no push involved. Messages on the open
+      // chat are being read and add nothing.
+      const incoming = lastMsg && !lastMsg.sent;
+      if (incoming && selectedChatId !== chatId) {
+        setUnreadByChat((prev) => onIncomingMessage(prev, chatId, false));
+      }
+
       setChats((prev) => {
         if (prev.some((c) => c.id === chatId)) {
           return prev.map((c) => (c.id === chatId ? { ...c, messages, ...stamp } : c));
@@ -649,10 +1196,10 @@ export default function ChatListScreen() {
         return [{ ...draftChat, messages, ...stamp }, ...prev];
       });
     },
-    [draftChat],
+    [draftChat, selectedChatId],
   );
 
-  const loadContactsForPicker = async () => {
+  const loadContactsForPicker = useCallback(async () => {
     setLoadingContacts(true);
     setPermissionDenied(false);
     try {
@@ -684,36 +1231,153 @@ export default function ChatListScreen() {
     } finally {
       setLoadingContacts(false);
     }
-  };
+  }, []);
 
   const openContactPicker = async () => {
     setShowContactPicker(true);
     await loadContactsForPicker();
   };
 
-  const selectContact = (contact: Contact) => {
-    setShowContactPicker(false);
-    const phoneDigits = contact.phone.replace(/\D/g, '');
-    const existingChat = chats.find(
-      (c) => c.contact.id === contact.id || c.contact.phone.replace(/\D/g, '') === phoneDigits,
-    );
-    if (existingChat) {
-      setDraftChat(null);
-      setSelectedChatId(existingChat.id);
-      return;
-    }
-    if (draftChat && draftChat.contact.phone.replace(/\D/g, '') === phoneDigits) {
-      setSelectedChatId(draftChat.id);
-      return;
-    }
-    const newChat: Chat = {
-      id: `chat-${Date.now()}`,
-      contact,
-      messages: [],
+  // NOTIFICATIONS-DENIED (Scenario 3.4/3.5): opening a chat clears its in-app
+  // badge — unread state must match what the user has actually read.
+  const openChat = useCallback((chatId: string) => {
+    setSelectedChatId(chatId);
+    setUnreadByChat((prev) => onChatOpened(prev, chatId));
+  }, []);
+
+  const selectContact = useCallback(
+    (contact: Contact) => {
+      setShowContactPicker(false);
+      const phoneDigits = contact.phone.replace(/\D/g, '');
+      const existingChat = chats.find(
+        (c) => c.contact.id === contact.id || c.contact.phone.replace(/\D/g, '') === phoneDigits,
+      );
+      if (existingChat) {
+        setDraftChat(null);
+        openChat(existingChat.id);
+        return;
+      }
+      if (draftChat && draftChat.contact.phone.replace(/\D/g, '') === phoneDigits) {
+        openChat(draftChat.id);
+        return;
+      }
+      const newChat: Chat = {
+        id: `chat-${Date.now()}`,
+        contact,
+        messages: [],
+      };
+      setDraftChat(newChat);
+      setSelectedChatId(newChat.id);
+    },
+    [chats, draftChat, openChat],
+  );
+
+  // CONTACTS-DENIED MANUAL ENTRY (Scenario 3.2/3.3, PRD §5.4, Tech Arch §14.3):
+  // Starting a chat requires a checked number, not unchecked free text. The raw
+  // input is normalized to E.164, hashed, and sent to the SAME matching
+  // endpoint PERM-2.3 uses — as a one-item batch. Only a match yields a chat.
+  const handleManualChat = useCallback(
+    async (raw: string): Promise<string | null> => {
+      const e164 = normalizeToE164(raw) ?? normalizeToE164(raw, 'US');
+      if (!e164) {
+        return 'Enter a valid international number, e.g. +1 415 555 2671.';
+      }
+
+      let matched = false;
+      try {
+        const hash = hashContactNumber(e164, GLOBAL_SALT);
+        const res = await contactSyncApi.syncContactHashes([hash]);
+        matched = res.matched > 0;
+      } catch {
+        return 'Could not verify this number right now. Please try again.';
+      }
+
+      if (!matched) {
+        return 'This number isn\u2019t registered on ONB yet.';
+      }
+
+      selectContact({
+        id: `manual-${e164}`,
+        name: e164,
+        phone: e164,
+        initials: e164.replace(/\D/g, '').slice(-2) || '?',
+        avatar: null,
+      });
+      return null;
+    },
+    [selectContact],
+  );
+
+  // NOTIFICATIONS-DENIED VERIFY knob (Scenario 3.4/3.5 denied): the in-app
+  // mirror of the grant-path `simulateIncomingPush`. With the app foregrounded
+  // (Notifications denied, so no push can fire) this injects a fresh incoming
+  // message onto a chat and bumps its unread badge live — proving the app never
+  // silently fails to show unread messages it can render in-app. If the chat is
+  // currently open nothing is badged (you are already reading it).
+  const simulateIncomingMessage = useCallback((): { chatId: string; opened: boolean; unreadTotal: number } => {
+    const target = chats[0] ?? draftChat;
+    if (!target) throw new Error('NO_CHAT — open or start a chat first');
+
+    const now = new Date();
+    const incoming: Message = {
+      id: `in${Date.now()}`,
+      text: 'Hello — a new message just arrived.',
+      sent: false,
+      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateKey: getDateKey(now),
     };
-    setDraftChat(newChat);
-    setSelectedChatId(newChat.id);
-  };
+
+    const chatId = target.id;
+    const opened = selectedChatId === chatId;
+
+    setUnreadByChat((prev) => onIncomingMessage(prev, chatId, opened));
+
+    if (chats.some((c) => c.id === chatId)) {
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? { ...c, messages: [...c.messages, incoming], lastMessage: incoming.text, lastMessageTime: incoming.time }
+            : c,
+        ),
+      );
+    } else {
+      setDraftChat((prev) => (prev && prev.id === chatId ? { ...prev, messages: [...prev.messages, incoming] } : prev));
+    }
+
+    return {
+      chatId,
+      opened,
+      unreadTotal: Object.values(unreadByChat).reduce((sum, n) => sum + n, 0) + (opened ? 0 : 1),
+    };
+  }, [chats, draftChat, selectedChatId, unreadByChat]);
+
+  // Register the deny-path VERIFY knob so a devtools call can fire it while the
+  // screen is mounted (in-app unread is screen-local, unlike the push knob).
+  useEffect(() => {
+    simulateIncomingMessageHandle = simulateIncomingMessage;
+    return () => {
+      simulateIncomingMessageHandle = null;
+    };
+  }, [simulateIncomingMessage]);
+
+  // PERM-2.13 re-detection (edge case): if the app returns to the foreground
+  // after Contacts was granted in Settings, re-verify and transition the open
+  // picker back to synced contacts without navigating away.
+  useEffect(() => {
+    if (!showContactPicker) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        Contacts.getPermissionsAsync()
+          .then((perm) => {
+            if (perm.granted ?? perm.status === 'granted') {
+              loadContactsForPicker();
+            }
+          })
+          .catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [showContactPicker, loadContactsForPicker]);
 
   const toggleSearch = () => {
     setShowSearch(!showSearch);
@@ -773,7 +1437,12 @@ export default function ChatListScreen() {
             data={filteredChats}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <ChatItem chat={item} colors={colors} onPress={() => setSelectedChatId(item.id)} />
+              <ChatItem
+                chat={item}
+                colors={colors}
+                unread={unreadByChat[item.id] ?? 0}
+                onPress={() => openChat(item.id)}
+              />
             )}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={s.listContent}
@@ -814,6 +1483,7 @@ export default function ChatListScreen() {
         visible={showContactPicker}
         onClose={() => setShowContactPicker(false)}
         onSelectContact={selectContact}
+        onManualChat={handleManualChat}
         loading={loadingContacts}
         contacts={contacts}
         permissionDenied={permissionDenied}
@@ -979,6 +1649,31 @@ const s = StyleSheet.create({
   emptyButton: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, marginTop: 16 },
   emptyButtonText: { fontSize: 14, fontWeight: '600', fontFamily: FONTS.bodyMedium },
 
+  modalDenied: { flex: 1, paddingHorizontal: 20, paddingTop: 20 },
+  manualTitle: { fontSize: 17, fontWeight: '600', fontFamily: FONTS.bodyMedium, marginBottom: 6 },
+  manualHint: { fontSize: 13, lineHeight: 19, fontFamily: FONTS.body, marginBottom: 16 },
+  manualInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    gap: 10,
+    marginBottom: 16,
+  },
+  manualInput: { flex: 1, fontSize: 16, fontFamily: FONTS.body },
+  manualError: { fontSize: 13, fontFamily: FONTS.body, marginBottom: 14, marginTop: -8 },
+  manualStartButton: {
+    minHeight: 52,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  manualStartText: { fontSize: 14, fontWeight: '600', letterSpacing: 1.5, fontFamily: FONTS.bodyMedium },
+
   chatView: { flex: 1 },
   chatHeader: {
     flexDirection: 'row',
@@ -1006,6 +1701,15 @@ const s = StyleSheet.create({
   receivedBubble: { borderBottomLeftRadius: 4 },
 
   messageText: { fontSize: 15.5, fontFamily: FONTS.body, lineHeight: 21 },
+  messageImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 4,
+  },
+  voiceNoteRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 2 },
+  voiceNoteText: { fontSize: 15.5, fontFamily: FONTS.body, fontVariant: ['tabular-nums'] },
   messageMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 2 },
   messageTime: { fontSize: 10.5, fontFamily: FONTS.body },
 
@@ -1055,6 +1759,21 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   inputField: { fontSize: 15, fontFamily: FONTS.body, paddingVertical: 8, maxHeight: 100 },
+
+  recordingState: {
+    flex: 1,
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  recordingDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  recordingText: { fontSize: 14, fontFamily: FONTS.bodyMedium, flex: 1 },
+  recordingTimer: { fontSize: 14, fontFamily: FONTS.body, fontVariant: ['tabular-nums'] },
+  recordingError: { fontSize: 11, fontFamily: FONTS.body, marginTop: 4 },
+
   sendButton: {
     marginLeft: 8,
     borderRadius: 20,

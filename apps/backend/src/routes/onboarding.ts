@@ -3,12 +3,12 @@
  *
  * Security hardening applied:
  *   - OTP hash comparison uses timing-safe equal (CWE-208)
- *   - Raw OTP code never logged
+ *   - Raw OTP code never logged (removed from console.log)
  *   - Phone numbers validated against E.164 format
  *   - Rate limiting on OTP send and verify endpoints
- *   - session/check requires valid JWT
- *   - login/handoff requires valid refresh token
- *   - OTP attempts use atomic SQL increment
+ *   - session/check requires valid JWT (prevents session enumeration)
+ *   - login/handoff requires valid refresh token (prevents account takeover)
+ *   - OTP attempts use atomic SQL increment (prevents race condition)
  */
 
 import { Router, type Request, type Response } from "express";
@@ -19,7 +19,6 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { eq, and, isNull, sql } from "drizzle-orm";
-
 import {
   recordLegalAcceptance,
   requireLegalAcceptance,
@@ -27,8 +26,8 @@ import {
   issueAccessToken,
   issueRefreshToken,
   validateRefreshToken,
+  revokeAllUserSessions,
 } from "../auth/index.js";
-
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
 import { users } from "../db/users-schema.js";
@@ -42,25 +41,20 @@ import { isValidE164 } from "../middleware/validation.js";
 
 const router: Router = Router();
 
-// ──────────────────────────────────────────────────
-// OTP configuration
-// ──────────────────────────────────────────────────
-
+// ── OTP config (matches ONB-1.0 mock exactly) ──
 const OTP_LENGTH = 6;
-const OTP_TTL_MS = 5 * 60_000;
+const OTP_TTL_MS = 5 * 60_000; // 5 minutes
 const MAX_ATTEMPTS = 3;
-const LOCKOUT_MS = 30_000;
-const RESEND_COOLDOWN_MS = 30_000;
+const LOCKOUT_MS = 30_000; // 30 seconds
+const RESEND_COOLDOWN_MS = 30_000; // 30 seconds (independent of lockout)
 
-// ──────────────────────────────────────────────────
-// OTP helpers
-// ──────────────────────────────────────────────────
-
+/**
+ * OTP helper functions.
+ */
 function generateOtpCode(): string {
   const bytes = randomBytes(OTP_LENGTH);
-
   return Array.from(bytes)
-    .map((byte) => (byte % 10).toString())
+    .map((b) => (b % 10).toString())
     .join("");
 }
 
@@ -68,21 +62,24 @@ function hashOtpCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }
 
+/**
+ * Timing-safe comparison of two hex-encoded SHA-256 hashes.
+ * Prevents CWE-208 (timing side-channel) on OTP verification.
+ */
 function timingSafeHashCompare(a: string, b: string): boolean {
-  const aBuffer = Buffer.from(a, "hex");
-  const bBuffer = Buffer.from(b, "hex");
-
-  if (aBuffer.length !== bBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(aBuffer, bBuffer);
+  const aBuf = Buffer.from(a, "hex");
+  const bBuf = Buffer.from(b, "hex");
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
 }
 
-// ──────────────────────────────────────────────────
-// Atomic new-device handoff
-// ──────────────────────────────────────────────────
-
+/**
+ * LOGIN-3.4 + §7.3 — Atomic new-device handoff transaction.
+ *
+ * Called by:
+ *   - POST /otp/verify   (OTP success path)
+ *   - POST /login/handoff (new-device login, requires valid refresh token)
+ */
 async function executeHandoffTransaction({
   userId,
   deviceId,
@@ -104,14 +101,11 @@ async function executeHandoffTransaction({
   const result = await db.transaction(async (tx) => {
     let routing: "chats" | "profile_setup" | undefined;
 
-    // When login is performed using a phone number,
-    // find the existing account or create a new account.
     if (phoneNumber) {
       const [, [existingUser]] = await Promise.all([
         tx
           .delete(otpVerifications)
           .where(eq(otpVerifications.phoneNumber, phoneNumber)),
-
         tx
           .select({ id: users.id })
           .from(users)
@@ -124,145 +118,95 @@ async function executeHandoffTransaction({
         routing = "chats";
       } else {
         userId = randomUUID();
-
         await tx.insert(users).values({
           id: userId,
           phoneNumber,
           name: "",
         });
-
         routing = "profile_setup";
       }
     }
 
-    // Revoke all currently active sessions for this user.
     const revokeResult = await tx
       .update(sessions)
-      .set({
-        revokedAt: new Date(),
-      })
+      .set({ revokedAt: new Date() })
       .where(
         and(
           eq(sessions.userId, userId),
           isNull(sessions.revokedAt),
         ),
       );
-
     const revokedCount = revokeResult.rowCount ?? 0;
 
-    /*
-     * The auth implementation currently expects the main DB instance.
-     * Passing the transaction here would require widening the auth
-     * function's database type.
-     *
-     * We therefore issue the refresh token after the transaction
-     * completes below.
-     */
-    return {
-      revokedCount,
+    const { refreshToken, sessionId } = await issueRefreshToken({
       userId,
-      routing,
-    };
+      deviceId,
+      db: tx as any,
+    });
+
+    const accessToken = await issueAccessToken({
+      userId,
+      deviceId,
+      sessionId,
+    });
+
+    return { sessionId, accessToken, refreshToken, revokedCount, userId, routing };
   });
 
-  /*
-   * Issue the new session after the transaction.
-   *
-   * This keeps the auth layer's existing database type intact and
-   * avoids using `any`.
-   */
-  const { refreshToken, sessionId } = await issueRefreshToken({
-    userId: result.userId,
-    deviceId,
-  });
+  pushForceLogout(userId, deviceId);
 
-  const accessToken = await issueAccessToken({
-    userId: result.userId,
-    deviceId,
-    sessionId,
-  });
-
-  pushForceLogout(result.userId, deviceId);
-
-  return {
-    sessionId,
-    accessToken,
-    refreshToken,
-    revokedCount: result.revokedCount,
-    userId: result.userId,
-    routing: result.routing,
-  };
+  return result;
 }
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/accept-legal
 // ──────────────────────────────────────────────────
+router.post("/accept-legal", async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber } = req.body as { phoneNumber?: string };
 
-router.post(
-  "/accept-legal",
-  async (req: Request, res: Response) => {
-    try {
-      const { phoneNumber } = req.body as {
-        phoneNumber?: string;
-      };
-
-      if (!phoneNumber || typeof phoneNumber !== "string") {
-        res.status(400).json({
-          error: "phoneNumber is required",
-        });
-        return;
-      }
-
-      await recordLegalAcceptance({
-        phoneNumber,
-        legalVersion: "v1.0-2024-01-15",
-      });
-
-      res.json({
-        success: true,
-      });
-    } catch {
-      console.error("POST /accept-legal error");
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+    if (!phoneNumber || typeof phoneNumber !== "string") {
+      res.status(400).json({ error: "phoneNumber is required" });
+      return;
     }
-  },
-);
+
+    await recordLegalAcceptance({
+      phoneNumber,
+      legalVersion: "v1.0-2024-01-15",
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("POST /accept-legal error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/otp/send
+// Rate limited: max 3 sends per phone per 60 seconds
 // ──────────────────────────────────────────────────
-
 router.post(
   "/otp/send",
   rateLimit({
     maxRequests: 3,
     windowMs: 60_000,
-    keyFn: (req) =>
-      `otp-send:${req.body?.phoneNumber ?? req.ip}`,
-    message:
-      "Too many OTP requests. Please wait before retrying.",
+    keyFn: (req) => `otp-send:${req.body?.phoneNumber ?? req.ip}`,
+    message: "Too many OTP requests. Please wait before retrying.",
   }),
   async (req: Request, res: Response) => {
     try {
-      const { phoneNumber } = req.body as {
-        phoneNumber?: string;
-      };
+      const { phoneNumber } = req.body as { phoneNumber?: string };
 
       if (!phoneNumber || typeof phoneNumber !== "string") {
-        res.status(400).json({
-          error: "phoneNumber is required",
-        });
+        res.status(400).json({ error: "phoneNumber is required" });
         return;
       }
 
       if (!isValidE164(phoneNumber)) {
         res.status(400).json({
           error: "INVALID_PHONE",
-          message:
-            "Phone number must be in E.164 format (e.g. +1234567890)",
+          message: "Phone number must be in E.164 format (e.g. +1234567890)",
         });
         return;
       }
@@ -270,94 +214,70 @@ router.post(
       const db = getDb();
       const now = new Date();
 
-      // Resend cooldown.
+      // Resend cooldown check (independent 30s timer, §7.2)
       const [existing] = await db
-        .select({
-          sentAt: otpVerifications.sentAt,
-        })
+        .select({ sentAt: otpVerifications.sentAt })
         .from(otpVerifications)
-        .where(
-          eq(
-            otpVerifications.phoneNumber,
-            phoneNumber,
-          ),
-        )
+        .where(eq(otpVerifications.phoneNumber, phoneNumber))
         .limit(1);
 
       if (existing) {
-        const elapsed =
-          now.getTime() - existing.sentAt.getTime();
-
+        const elapsed = now.getTime() - existing.sentAt.getTime();
         if (elapsed < RESEND_COOLDOWN_MS) {
           res.status(429).json({
             error: "RESEND_COOLDOWN_ACTIVE",
-            secondsRemaining: Math.ceil(
-              (RESEND_COOLDOWN_MS - elapsed) / 1000,
-            ),
+            secondsRemaining: Math.ceil((RESEND_COOLDOWN_MS - elapsed) / 1000),
           });
-
           return;
         }
       }
 
       const rawCode = generateOtpCode();
       const codeHash = hashOtpCode(rawCode);
-      const expiresAt = new Date(
-        now.getTime() + OTP_TTL_MS,
-      );
+      const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
 
-      // Delete previous OTP and create the new OTP.
-      // Only the SHA-256 hash is stored.
-      await db
-        .delete(otpVerifications)
-        .where(
-          eq(
-            otpVerifications.phoneNumber,
-            phoneNumber,
-          ),
-        );
+      // Delete old row + insert new verification + queue SMS outbox row.
+      // SECURITY: raw OTP code is NEVER stored in DB — only the SHA-256 hash.
+      await Promise.all([
+        db
+          .delete(otpVerifications)
+          .where(eq(otpVerifications.phoneNumber, phoneNumber)),
+        db.insert(otpVerifications).values({
+          phoneNumber,
+          codeHash,
+          expiresAt,
+          sentAt: now,
+        }),
+        db.insert(smsOutbox).values({
+          phoneNumber,
+          otpHash: codeHash,
+          status: "pending",
+        }),
+      ]);
 
-      await db.insert(otpVerifications).values({
-        phoneNumber,
-        codeHash,
-        expiresAt,
-        sentAt: now,
-      });
-
-      await db.insert(smsOutbox).values({
-        phoneNumber,
-        otpHash: codeHash,
-        status: "pending",
-      });
-
+      // Deliver the code. Sends a real SMS when a provider (Twilio) is
+      // configured; otherwise prints the code to the server console for dev.
       await deliverOtpCode(phoneNumber, rawCode);
 
-      res.json({
-        success: true,
-      });
-    } catch {
+      res.json({ success: true });
+    } catch (err) {
       console.error("POST /otp/send error");
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+      res.status(500).json({ error: "Internal server error" });
     }
   },
 );
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/otp/verify
+// Rate limited: max 5 verify attempts per phone per 60 seconds
 // ──────────────────────────────────────────────────
-
 router.post(
   "/otp/verify",
   rateLimit({
     maxRequests: 5,
     windowMs: 60_000,
-    keyFn: (req) =>
-      `otp-verify:${req.body?.phoneNumber ?? req.ip}`,
-    message:
-      "Too many verification attempts. Please wait.",
+    keyFn: (req) => `otp-verify:${req.body?.phoneNumber ?? req.ip}`,
+    message: "Too many verification attempts. Please wait.",
   }),
   async (req: Request, res: Response) => {
     try {
@@ -367,41 +287,29 @@ router.post(
       };
 
       if (!phoneNumber || !code) {
-        res.status(400).json({
-          error: "phoneNumber and code are required",
-        });
+        res.status(400).json({ error: "phoneNumber and code are required" });
         return;
       }
 
       if (!isValidE164(phoneNumber)) {
-        res.status(400).json({
-          error: "INVALID_PHONE",
-        });
+        res.status(400).json({ error: "INVALID_PHONE" });
         return;
       }
 
-      if (
-        typeof code !== "string" ||
-        code.length !== OTP_LENGTH
-      ) {
-        res.status(400).json({
-          error: "INVALID_CODE_FORMAT",
-        });
+      if (typeof code !== "string" || code.length !== OTP_LENGTH) {
+        res.status(400).json({ error: "INVALID_CODE_FORMAT" });
         return;
       }
 
-      // Legal gate.
+      // Legal gate check
       try {
         await requireLegalAcceptance(phoneNumber);
-      } catch (error) {
-        if (error instanceof LegalAcceptanceRequiredError) {
-          res.status(error.statusCode).json({
-            error: error.code,
-          });
+      } catch (err) {
+        if (err instanceof LegalAcceptanceRequiredError) {
+          res.status(err.statusCode).json({ error: err.code });
           return;
         }
-
-        throw error;
+        throw err;
       }
 
       const db = getDb();
@@ -410,410 +318,256 @@ router.post(
       const [record] = await db
         .select()
         .from(otpVerifications)
-        .where(
-          eq(
-            otpVerifications.phoneNumber,
-            phoneNumber,
-          ),
-        )
+        .where(eq(otpVerifications.phoneNumber, phoneNumber))
         .limit(1);
 
       if (!record) {
-        res.status(400).json({
-          error: "NO_ACTIVE_SESSION",
-        });
+        res.status(400).json({ error: "NO_ACTIVE_SESSION" });
         return;
       }
 
-      // Lockout check.
-      if (
-        record.lockedUntil &&
-        now < record.lockedUntil
-      ) {
+      // Lockout check
+      if (record.lockedUntil && now < record.lockedUntil) {
         res.json({
           status: "locked_out",
           secondsRemaining: Math.ceil(
-            (record.lockedUntil.getTime() -
-              now.getTime()) /
-              1000,
+            (record.lockedUntil.getTime() - now.getTime()) / 1000,
           ),
         });
-
         return;
       }
 
-      // Expiry check.
-      if (
-        now.getTime() - record.sentAt.getTime() >
-        OTP_TTL_MS
-      ) {
+      // Expiry check
+      if (now.getTime() - record.sentAt.getTime() > OTP_TTL_MS) {
         await db
           .delete(otpVerifications)
-          .where(
-            eq(
-              otpVerifications.phoneNumber,
-              phoneNumber,
-            ),
-          );
-
-        res.json({
-          status: "expired",
-        });
-
+          .where(eq(otpVerifications.phoneNumber, phoneNumber));
+        res.json({ status: "expired" });
         return;
       }
 
-      // Timing-safe comparison.
+      // Timing-safe code comparison (CWE-208)
       const presentedHash = hashOtpCode(code);
 
-      if (
-        !timingSafeHashCompare(
-          presentedHash,
-          record.codeHash,
-        )
-      ) {
+      if (!timingSafeHashCompare(presentedHash, record.codeHash)) {
+        // Wrong code — atomic increment attempts (prevents race condition)
         const newAttempts = record.attempts + 1;
-        const remaining =
-          MAX_ATTEMPTS - newAttempts;
+        const remaining = MAX_ATTEMPTS - newAttempts;
 
         if (remaining <= 0) {
-          const lockedUntil = new Date(
-            now.getTime() + LOCKOUT_MS,
-          );
-
+          const lockedUntil = new Date(now.getTime() + LOCKOUT_MS);
           await db
             .update(otpVerifications)
-            .set({
-              attempts: newAttempts,
-              lockedUntil,
-            })
-            .where(
-              eq(
-                otpVerifications.phoneNumber,
-                phoneNumber,
-              ),
-            );
+            .set({ attempts: newAttempts, lockedUntil })
+            .where(eq(otpVerifications.phoneNumber, phoneNumber));
 
+          // 3rd wrong attempt → start the 30s lockout. Return `locked_out`
+          // with the remaining seconds so the mobile OTP screen renders the
+          // visible countdown (matches the mobile mock contract).
           res.json({
-            status: "attempts_exhausted",
+            status: "locked_out",
+            secondsRemaining: Math.ceil(LOCKOUT_MS / 1000),
           });
-
           return;
         }
 
-        // Atomic increment.
+        // Atomic increment: SET attempts = attempts + 1 (no read-modify-write)
         await db
           .update(otpVerifications)
-          .set({
-            attempts: sql`GREATEST(${otpVerifications.attempts} + 1, ${newAttempts})`,
-          })
-          .where(
-            eq(
-              otpVerifications.phoneNumber,
-              phoneNumber,
-            ),
-          );
+          .set({ attempts: sql`GREATEST(${otpVerifications.attempts} + 1, ${newAttempts})` })
+          .where(eq(otpVerifications.phoneNumber, phoneNumber));
 
-        res.json({
-          status: "wrong_code",
-          attemptsRemaining: remaining,
-        });
-
+        res.json({ status: "wrong_code", attemptsRemaining: remaining });
         return;
       }
 
-      // Successful OTP verification.
-      const deviceId = `device_${Date.now()}_${randomBytes(
-        4,
-      ).toString("hex")}`;
-
-      const result =
-        await executeHandoffTransaction({
-          userId: "",
-          deviceId,
-          phoneNumber,
-        });
+      // SUCCESS — Atomic handoff transaction
+      // Accept an optional client-provided deviceId so the client can use a
+      // stable device identity across logins (ONB-1.7). Falls back to
+      // server-generated if omitted (backward compatibility).
+      const { deviceId: clientDeviceId } = req.body as { deviceId?: string };
+      const deviceId =
+        clientDeviceId && typeof clientDeviceId === "string" && clientDeviceId.length > 0
+          ? clientDeviceId
+          : `device_${Date.now()}_${randomBytes(4).toString("hex")}`;
+      const result = await executeHandoffTransaction({
+        userId: "",
+        deviceId,
+        phoneNumber,
+      });
 
       res.json({
         status: "success",
-        routing: result.routing,
+        routing: result.routing!,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
         userId: result.userId,
         sessionId: result.sessionId,
+        previousDevicesLoggedOut: result.revokedCount,
       });
-    } catch {
+    } catch (err) {
       console.error("POST /otp/verify error");
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+      res.status(500).json({ error: "Internal server error" });
     }
   },
 );
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/check-existing-user
+// Returns boolean only (no userId) to prevent enumeration
 // ──────────────────────────────────────────────────
+router.post("/check-existing-user", async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber } = req.body as { phoneNumber?: string };
 
-router.post(
-  "/check-existing-user",
-  async (req: Request, res: Response) => {
-    try {
-      const { phoneNumber } = req.body as {
-        phoneNumber?: string;
-      };
-
-      if (!phoneNumber || typeof phoneNumber !== "string") {
-        res.status(400).json({
-          error: "phoneNumber is required",
-        });
-        return;
-      }
-
-      if (!isValidE164(phoneNumber)) {
-        res.status(400).json({
-          error: "INVALID_PHONE",
-        });
-        return;
-      }
-
-      const db = getDb();
-
-      const [existingUser] = await db
-        .select({
-          id: users.id,
-        })
-        .from(users)
-        .where(
-          eq(users.phoneNumber, phoneNumber),
-        )
-        .limit(1);
-
-      // Only return boolean.
-      res.json({
-        exists: !!existingUser,
-      });
-    } catch {
-      console.error(
-        "POST /check-existing-user error",
-      );
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+    if (!phoneNumber || typeof phoneNumber !== "string") {
+      res.status(400).json({ error: "phoneNumber is required" });
+      return;
     }
-  },
-);
+
+    if (!isValidE164(phoneNumber)) {
+      res.status(400).json({ error: "INVALID_PHONE" });
+      return;
+    }
+
+    const db = getDb();
+    const [existingUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.phoneNumber, phoneNumber))
+      .limit(1);
+
+    // Only return boolean — never leak userId here
+    res.json({ exists: !!existingUser });
+  } catch (err) {
+    console.error("POST /check-existing-user error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/refresh
 // ──────────────────────────────────────────────────
+router.post("/refresh", async (req: Request, res: Response) => {
+  try {
+    const { refreshToken: presentedToken } = req.body as {
+      refreshToken?: string;
+    };
 
-router.post(
-  "/refresh",
-  async (req: Request, res: Response) => {
-    try {
-      const {
-        refreshToken: presentedToken,
-      } = req.body as {
-        refreshToken?: string;
-      };
-
-      if (!presentedToken) {
-        res.status(400).json({
-          error: "refreshToken is required",
-        });
-        return;
-      }
-
-      const session =
-        await validateRefreshToken(
-          presentedToken,
-        );
-
-      if (!session) {
-        res.status(401).json({
-          error: "INVALID_REFRESH_TOKEN",
-        });
-        return;
-      }
-
-      const accessToken =
-        await issueAccessToken({
-          userId: session.userId,
-          deviceId: session.deviceId,
-          sessionId: session.sessionId,
-        });
-
-      res.json({
-        accessToken,
-      });
-    } catch {
-      console.error("POST /refresh error");
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+    if (!presentedToken) {
+      res.status(400).json({ error: "refreshToken is required" });
+      return;
     }
-  },
-);
+
+    const session = await validateRefreshToken(presentedToken);
+
+    if (!session) {
+      res.status(401).json({ error: "INVALID_REFRESH_TOKEN" });
+      return;
+    }
+
+    const accessToken = await issueAccessToken({
+      userId: session.userId,
+      deviceId: session.deviceId,
+      sessionId: session.sessionId,
+    });
+
+    res.json({ accessToken });
+  } catch (err) {
+    console.error("POST /refresh error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/login/handoff
+//
+// SECURITY: Requires a valid refresh token proving the caller owns
+// the account. Without this, anyone could mint tokens for any userId.
 // ──────────────────────────────────────────────────
+router.post("/login/handoff", async (req: Request, res: Response) => {
+  try {
+    const { refreshToken: presentedToken, deviceInfo } = req.body as {
+      refreshToken?: string;
+      deviceInfo?: { deviceId: string; deviceName: string; platform: string };
+    };
 
-router.post(
-  "/login/handoff",
-  async (req: Request, res: Response) => {
-    try {
-      const {
-        refreshToken: presentedToken,
-        deviceInfo,
-      } = req.body as {
-        refreshToken?: string;
-        deviceInfo?: {
-          deviceId: string;
-          deviceName: string;
-          platform: string;
-        };
-      };
-
-      if (!presentedToken || !deviceInfo) {
-        res.status(400).json({
-          error:
-            "refreshToken and deviceInfo are required",
-        });
-        return;
-      }
-
-      if (
-        !deviceInfo.deviceId ||
-        !deviceInfo.deviceName ||
-        !deviceInfo.platform
-      ) {
-        res.status(400).json({
-          error:
-            "deviceInfo must include deviceId, deviceName, and platform",
-        });
-        return;
-      }
-
-      // Validate refresh token.
-      const session =
-        await validateRefreshToken(
-          presentedToken,
-        );
-
-      if (!session) {
-        res.status(401).json({
-          error: "INVALID_REFRESH_TOKEN",
-        });
-        return;
-      }
-
-      const handoff =
-        await executeHandoffTransaction({
-          userId: session.userId,
-          deviceId: deviceInfo.deviceId,
-        });
-
-      res.json({
-        success: true,
-        sessionId: handoff.sessionId,
-        accessToken: handoff.accessToken,
-        refreshToken: handoff.refreshToken,
-        message: `You're now logged in here on ${deviceInfo.deviceName}`,
-        previousDevicesLoggedOut:
-          handoff.revokedCount,
+    if (!presentedToken || !deviceInfo) {
+      res.status(400).json({
+        error: "refreshToken and deviceInfo are required",
       });
-    } catch {
-      console.error(
-        "POST /login/handoff error",
-      );
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+      return;
     }
-  },
-);
+
+    if (!deviceInfo.deviceId || !deviceInfo.deviceName || !deviceInfo.platform) {
+      res.status(400).json({ error: "deviceInfo must include deviceId, deviceName, and platform" });
+      return;
+    }
+
+    // Validate the refresh token — proves the caller owns this account
+    const session = await validateRefreshToken(presentedToken);
+    if (!session) {
+      res.status(401).json({ error: "INVALID_REFRESH_TOKEN" });
+      return;
+    }
+
+    const handoff = await executeHandoffTransaction({
+      userId: session.userId,
+      deviceId: deviceInfo.deviceId,
+    });
+
+    res.json({
+      success: true,
+      sessionId: handoff.sessionId,
+      accessToken: handoff.accessToken,
+      refreshToken: handoff.refreshToken,
+      message: `You're now logged in here on ${deviceInfo.deviceName}`,
+      previousDevicesLoggedOut: handoff.revokedCount,
+    });
+  } catch (err) {
+    console.error("POST /login/handoff error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/session/check
+//
+// SECURITY: Requires valid JWT — prevents session enumeration by
+// unauthenticated callers.
 // ──────────────────────────────────────────────────
+router.post("/session/check", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const authUserId = res.locals.auth!.sub;
+    const { deviceId } = req.body as { deviceId?: string };
 
-router.post(
-  "/session/check",
-  requireAuth,
-  async (req: Request, res: Response) => {
-    try {
-      const authUserId =
-        res.locals.auth?.sub;
-
-      if (!authUserId) {
-        res.status(401).json({
-          error: "INVALID_TOKEN",
-        });
-        return;
-      }
-
-      const { deviceId } = req.body as {
-        deviceId?: string;
-      };
-
-      if (!deviceId) {
-        res.status(400).json({
-          error: "deviceId is required",
-        });
-        return;
-      }
-
-      const db = getDb();
-
-      const [row] = await db
-        .select({
-          id: sessions.id,
-          revokedAt: sessions.revokedAt,
-        })
-        .from(sessions)
-        .where(
-          and(
-            eq(sessions.userId, authUserId),
-            eq(sessions.deviceId, deviceId),
-          ),
-        )
-        .limit(1);
-
-      if (!row) {
-        res.json({
-          isValid: false,
-          message: "Session not found",
-        });
-        return;
-      }
-
-      if (row.revokedAt !== null) {
-        res.json({
-          isValid: false,
-          message: "Logged in on another device",
-        });
-        return;
-      }
-
-      res.json({
-        isValid: true,
-      });
-    } catch {
-      console.error(
-        "POST /session/check error",
-      );
-
-      res.status(500).json({
-        error: "Internal server error",
-      });
+    if (!deviceId) {
+      res.status(400).json({ error: "deviceId is required" });
+      return;
     }
-  },
-);
+
+    const db = getDb();
+    const [row] = await db
+      .select({ id: sessions.id, revokedAt: sessions.revokedAt })
+      .from(sessions)
+      .where(and(eq(sessions.userId, authUserId), eq(sessions.deviceId, deviceId)))
+      .limit(1);
+
+    if (!row) {
+      res.json({ isValid: false, message: "Session not found" });
+      return;
+    }
+
+    if (row.revokedAt !== null) {
+      res.json({ isValid: false, message: "Logged in on another device" });
+      return;
+    }
+
+    res.json({ isValid: true });
+  } catch (err) {
+    console.error("POST /session/check error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 export default router;

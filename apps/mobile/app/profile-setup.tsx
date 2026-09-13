@@ -1,7 +1,8 @@
 // app/profile-setup.tsx
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  AppState,
   Platform,
   Pressable,
   StyleSheet,
@@ -15,10 +16,17 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Modal,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { onboardingApi } from '@/api/onboardingApi';
+import {
+  requestCameraPermission,
+  requestPhotosPermission,
+  checkCameraState,
+  checkPhotosState,
+} from '@/lib/permissions';
 import { Ionicons } from '@expo/vector-icons';
 
 const COLORS = {
@@ -44,6 +52,9 @@ export default function ProfileSetupScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isPickingImage, setIsPickingImage] = useState(false);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [cameraDenied, setCameraDenied] = useState(false);
+  const [photosDenied, setPhotosDenied] = useState(false);
+  const appStateRef = useRef(AppState.currentState);
 
   const hasVisibleChars = (text: string): boolean => text.trim().length > 0;
   const isNameValid = hasVisibleChars(name);
@@ -52,10 +63,46 @@ export default function ProfileSetupScreen() {
   const handleAboutChange = (text: string) => setAbout(text);
   const handleAboutBlur = () => { if (!about.trim()) setAbout(DEFAULT_ABOUT); };
 
+  // PERM-2.13 (recheck on foreground): the OS is the source of truth. If the
+  // user denied a permission, opened Settings, granted it, and returned, the
+  // internal denied state is cleared so no restart / manual refresh is needed.
+  // No camera/gallery is opened automatically — the user taps the action again.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (appStateRef.current === 'active' && next === 'active') return;
+      appStateRef.current = next;
+      if (next !== 'active') return;
+      if (cameraDenied) checkCameraState().then((s) => setCameraDenied(s === 'denied'));
+      if (photosDenied) checkPhotosState().then((s) => setPhotosDenied(s === 'denied'));
+    });
+    return () => sub.remove();
+  }, [cameraDenied, photosDenied]);
+
+  // Settings-directed denial prompt. Reused across Camera and Photos/Files so
+  // both features stay independent but consistent (PERM-DENIED rule).
+  const promptPermissionSettings = (title: string, message: string) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Settings', onPress: () => Linking.openSettings() },
+    ]);
+  };
+
   const handlePickImage = async () => {
+    setPhotosDenied(false);
+    setIsPickingImage(true);
+    setShowPhotoModal(false);
     try {
-      setIsPickingImage(true);
-      setShowPhotoModal(false);
+      if ((await checkPhotosState()) !== 'granted') {
+        const res = await requestPhotosPermission();
+        if (!res.granted) {
+          setPhotosDenied(true);
+          promptPermissionSettings(
+            'Photos access needed',
+            "To choose a photo from your gallery, allow Photo access in your device's Settings.",
+          );
+          return;
+        }
+      }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -72,13 +119,20 @@ export default function ProfileSetupScreen() {
   };
 
   const handleTakePhoto = async () => {
+    setCameraDenied(false);
+    setIsPickingImage(true);
+    setShowPhotoModal(false);
     try {
-      setIsPickingImage(true);
-      setShowPhotoModal(false);
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please grant camera permissions.');
-        return;
+      if ((await checkCameraState()) !== 'granted') {
+        const res = await requestCameraPermission();
+        if (!res.granted) {
+          setCameraDenied(true);
+          promptPermissionSettings(
+            'Camera access needed',
+            "To take a photo, allow Camera access in your device's Settings.",
+          );
+          return;
+        }
       }
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: true,
@@ -118,7 +172,12 @@ export default function ProfileSetupScreen() {
         photo: photo || undefined,
         about: about.trim() || DEFAULT_ABOUT,
       });
-      router.replace('/(tabs)');
+      // After profile creation, handle Notifications then Contacts before
+      // entering the Chat List.
+      router.replace({
+        pathname: '/notifications-info',
+        params: { phoneNumber: params.phoneNumber, displayPhone: params.displayPhone },
+      });
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to set up profile.');
     } finally {

@@ -4,7 +4,7 @@ import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
-// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
+import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -18,6 +18,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
+import { requireLegalAccepted } from '@/lib/legal-acceptance';
+import { getOrCreateDeviceId } from '@/lib/device-identity';
+import { resolvePostLoginRoute } from '@/lib/session-policy';
 //import * as Device from 'expo-device'; // optional, fallback provided
 
 const C = {
@@ -35,6 +38,13 @@ const C = {
 
 const BOXES = 6;
 const CODE_LIFETIME = 298;
+
+// Dev convenience ONLY: when EXPO_PUBLIC_AUTO_VERIFY_OTP=1 the fixed mock OTP
+// is auto-filled and auto-verified so a dev can hop straight into the app.
+// Off by default — the OTP boxes stay empty and verification is manual, which
+// lets wrong-code + lockout behavior be exercised (P3-2). This only ever uses
+// the in-memory mock code and can never auto-verify in a production build.
+const AUTO_VERIFY_MOCK_OTP = process.env.EXPO_PUBLIC_AUTO_VERIFY_OTP === '1';
 
 function formatClock(totalSeconds: number): string {
   const s = Math.max(0, totalSeconds);
@@ -59,9 +69,38 @@ export default function OtpEntryScreen() {
   const keyboardHeight = useKeyboardHeight();
   const shake = useRef(new Animated.Value(0)).current;
   const inputRefs = useRef<(TextInput | null)[]>([]);
+  const autoFilled = useRef(false);
 
   const OTP = otp.join('');
   const expired = expirySeconds <= 0;
+
+  // LEGAL-GATE — otp-entry is protected: without prior terms acceptance
+  // (durable flag) a direct deep-link bounces back to legal-acceptance.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const legalAccepted = await requireLegalAccepted();
+      if (!cancelled && !legalAccepted) {
+        router.replace('/legal-acceptance');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Dev convenience: auto-fill with the mock OTP and auto-verify after a brief
+  // delay so the dev sees the screen before it verifies and moves on. Only runs
+  // when EXPO_PUBLIC_AUTO_VERIFY_OTP=1; otherwise the boxes start empty and the
+  // user enters the code manually (so wrong-code / lockout paths are testable).
+  useEffect(() => {
+    if (!AUTO_VERIFY_MOCK_OTP || autoFilled.current) return;
+    autoFilled.current = true;
+    const timer = setTimeout(() => {
+      setOtp(['1', '2', '3', '4', '5', '6']);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, []);
 
   // --- Timers ---
   useEffect(() => {
@@ -122,11 +161,27 @@ export default function OtpEntryScreen() {
       setIsVerifying(true);
 
       try {
-        const result = await onboardingApi.verifyOtp({ phoneNumber, code: entered });
+        // ONB-1.7: a STABLE device identity is persisted once and reused on
+        // every login, and sent to the backend so the session registry keys
+        // this device(not a fresh random value each time). The backend treats
+        // this deviceId as the session owner — a later login from ANOTHER
+        // device revokes this one, and this device detects it via
+        // checkSessionValidity / force_logout.
+        let deviceId = '';
+        try {
+          deviceId = await getOrCreateDeviceId();
+        } catch {
+          // SecureStore unavailable — fall back to a session-scoped value so
+          // the login can still proceed; the backend mints its own if needed.
+          deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        }
+
+        const result = await onboardingApi.verifyOtp({ phoneNumber, code: entered, deviceId });
 
         if (result.status === 'success') {
-          const deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-          // Write all tokens in parallel — saves ~100ms on cold storage.
+          // Write all tokens in parallel — saves ~100ms on cold storage. The
+          // deviceId written here is the SAME stable identity used for OTP, so
+          // the stored session matches the backend's session registry row.
           await Promise.all([
             SecureStore.setItemAsync('userId', result.userId),
             SecureStore.setItemAsync('deviceId', deviceId),
@@ -135,9 +190,25 @@ export default function OtpEntryScreen() {
             SecureStore.setItemAsync('displayPhone', displayPhone),
           ]);
 
-          if (result.routing === 'chats') {
+          const route = resolvePostLoginRoute({
+            routing: result.routing,
+            previousDevicesLoggedOut: result.previousDevicesLoggedOut,
+          });
+
+          if (route === 'chats') {
+            // Existing user, no other active devices — continue straight in.
             router.replace('/(tabs)');
+          } else if (route === 'device-handoff') {
+            // ONB-1.7 (PRD 5.1–5.4): this login cut off other devices. Show
+            // the new-device confirmation (ONLY here — the old device gets a
+            // silent force_logout/session-check, never this message).
+            router.replace({
+              pathname: '/device-handoff',
+              params: { phoneNumber, displayPhone, userId: result.userId, fromOtp: '1' },
+            });
           } else {
+            // New users go to profile setup first; Contacts permission is
+            // requested right after (permission-info), before the Chat List.
             router.replace({
               pathname: '/profile-setup',
               params: { phoneNumber, displayPhone },
@@ -173,6 +244,21 @@ export default function OtpEntryScreen() {
     },
     [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake],
   );
+
+  // Auto-verify once the mock OTP is fully filled — only in the explicit dev
+  // convenience mode; manual entry never triggers this path.
+  useEffect(() => {
+    if (
+      AUTO_VERIFY_MOCK_OTP &&
+      autoFilled.current &&
+      OTP.length === BOXES &&
+      !isVerifying &&
+      !expired
+    ) {
+      const t = setTimeout(() => verify(OTP), 400);
+      return () => clearTimeout(t);
+    }
+  }, [OTP, isVerifying, expired, verify]);
 
   // --- OTP input handlers ---
   const focusFirstEmpty = () => {
@@ -212,7 +298,7 @@ export default function OtpEntryScreen() {
 
   // --- Resend OTP ---
   const handleResend = async () => {
-    if (resendCooldown > 0) return;
+    if (resendCooldown > 0 || isLocked) return;
 
     // Fire resend optimistically — update UI immediately, don't block on network.
     setResendCooldown(30);
@@ -222,7 +308,16 @@ export default function OtpEntryScreen() {
 
     try {
       await onboardingApi.sendOtp({ phoneNumber });
-    } catch {
+    } catch (e: any) {
+      // If an active lockout is blocking a fresh OTP (SEC: resend can't bypass
+      // the 30s lockout), restore the lockout state instead of treating it as a
+      // plain resend failure.
+      if (e?.message === 'OTP_LOCKED_OUT' || e?.status === 429 || e?.error === 'OTP_LOCKED_OUT') {
+        setIsLocked(true);
+        setLockoutSeconds((prev) => (prev > 0 ? prev : 30));
+        setError('Too many attempts. Try again shortly.');
+        return;
+      }
       // If resend failed, stop the cooldown so user can retry.
       setResendCooldown(0);
       Alert.alert('Error', 'Failed to resend OTP. Please try again.');
@@ -239,7 +334,7 @@ export default function OtpEntryScreen() {
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
-      <View
+      <LinearGradient
         colors={[C.bg2, C.bg]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.45 }}
@@ -330,7 +425,7 @@ export default function OtpEntryScreen() {
             <Pressable
               style={styles.resend}
               onPress={handleResend}
-              disabled={resendCooldown > 0 || isVerifying}
+              disabled={resendCooldown > 0 || isVerifying || isLocked}
               hitSlop={8}
             >
               <Text style={styles.resendText}>
@@ -338,16 +433,20 @@ export default function OtpEntryScreen() {
                 <Text
                   style={[
                     styles.resendLink,
-                    resendCooldown > 0 && styles.resendLinkDisabled,
+                    (resendCooldown > 0 || isLocked) && styles.resendLinkDisabled,
                   ]}
                 >
-                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP'}
+                  {isLocked
+                    ? `Try again in ${lockoutSeconds}s`
+                    : resendCooldown > 0
+                    ? `Resend in ${resendCooldown}s`
+                    : 'Resend OTP'}
                 </Text>
               </Text>
             </Pressable>
           </View>
         </View>
-      </View>
+      </LinearGradient>
     </SafeAreaView>
   );
 }

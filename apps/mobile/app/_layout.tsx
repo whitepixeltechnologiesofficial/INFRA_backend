@@ -6,6 +6,11 @@ import { useFonts } from 'expo-font';
 import { Lato_400Regular, Lato_400Regular_Italic, Lato_700Bold, Lato_900Black } from '@expo-google-fonts/lato';
 import { ThemeProvider, useThemeContext } from '@/providers/ThemeProvider';
 import { SessionProvider } from '@/providers/SessionProvider';
+import { configurePushNotifications } from '@/lib/push';
+
+// Scenario 3.4 — install the notification handler before anything renders so a
+// push is always presented as an alert once the permission is granted.
+configurePushNotifications();
 
 function RootLayoutInner() {
   const { colorScheme, colors } = useThemeContext();
@@ -39,6 +44,9 @@ function RootLayoutInner() {
           <Stack.Screen name="legal-acceptance" options={{ headerShown: false }} />
           <Stack.Screen name="otp-entry" options={{ headerShown: false }} />
           <Stack.Screen name="profile-setup" options={{ headerShown: false }} />
+          <Stack.Screen name="notifications-info" options={{ headerShown: false }} />
+          <Stack.Screen name="permission-info" options={{ headerShown: false }} />
+          <Stack.Screen name="device-handoff" options={{ headerShown: false }} />
           <Stack.Screen name="settings" options={{ headerShown: false }} />
         </Stack>
         <StatusBar style={colors.statusBar} />

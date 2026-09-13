@@ -14,7 +14,7 @@ The onboarding experience is split into focused screens and a mock API layer. Ea
 
 ## 🧭 File-by-File Overview
 
-### 1. `api/mockOnboardingApi.ts`
+### 1. `api/onboardingApi.ts`
 
 **Card:** `ONB-1.0`
 
@@ -187,7 +187,7 @@ Onboarding Complete
 
 | File                       | Requirement     | Purpose                                |
 | -------------------------- | --------------- | -------------------------------------- |
-| `api/mockOnboardingApi.ts` | `ONB-1.0`       | OTP, legal, and registration API logic |
+| `api/onboardingApi.ts`       | `ONB-1.0`       | OTP, legal, and registration API logic |
 | `app/splash.tsx`           | `ONB-1.1`       | Required onboarding entry              |
 | `app/phone-entry.tsx`      | `ONB-1.2`       | Phone collection and validation        |
 | `app/legal-acceptance.tsx` | `ONB-1.3`       | Legal and age acceptance               |

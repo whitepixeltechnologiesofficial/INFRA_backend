@@ -8,6 +8,12 @@ import { createRequire } from "node:module";
  *   2. Otherwise fall back to printing the OTP to the server console so
  *      development/testing works without an SMS provider.
  *
+ * The console fallback is EXPLICITLY opt-in and NEVER active by default: it
+ * requires BOTH NODE_ENV !== "production" AND SMS_DEV_LOG=1. If either
+ * condition is false, the raw OTP and phone number are not logged anywhere —
+ * delivery simply reports "silent". This keeps local development usability
+ * without ever weakening production security when SMS is not configured.
+ *
  * The raw OTP never touches a database — it only lives in memory for the
  * duration of this function call. The database stores only the SHA-256 hash.
  */
@@ -77,7 +83,15 @@ export async function deliverOtpCode(
     return { delivered: true, via: "twilio" };
   }
 
-  // Dev fallback: print the code to the server console.
-  console.log(`[SMS-DEV] OTP for ${phoneNumber}: ${rawCode}`);
-  return { delivered: false, via: "console" };
+  // Dev fallback.
+  // SECURITY: raw OTP + phone number are only ever printed when development
+  // logging is EXPLICITLY enabled (non-production AND SMS_DEV_LOG=1). The
+  // default is silence — no raw OTP and no raw phone number is logged.
+  const devLogEnabled =
+    process.env.NODE_ENV !== "production" && process.env.SMS_DEV_LOG === "1";
+  if (devLogEnabled) {
+    console.log(`[SMS-DEV] OTP for ${phoneNumber}: ${rawCode}`);
+    return { delivered: false, via: "console" };
+  }
+  return { delivered: false, via: "silent" };
 }

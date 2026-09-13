@@ -16,10 +16,9 @@ import { Metadata, type MetadataJson } from 'libphonenumber-js/core';
 import metadataJson from 'libphonenumber-js/metadata.mobile.json';
 import examples from 'libphonenumber-js/examples.mobile.json';
 import { router } from 'expo-router';
-// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
+import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   Animated,
   FlatList,
   Modal,
@@ -31,6 +30,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { requireLegalAccepted } from '@/lib/legal-acceptance';
 
 const C = {
   bg: '#0B0F14',
@@ -183,28 +183,31 @@ export default function PhoneEntryScreen() {
       return;
     }
 
+    // LEGAL-GATE — an OTP may only be requested after the terms were accepted
+    // on the legal-acceptance screen (durable flag). Direct navigation here
+    // without acceptance is rejected.
+    const legalAccepted = await requireLegalAccepted();
+    if (!legalAccepted) {
+      router.replace('/legal-acceptance');
+      return;
+    }
+
     const e164 = parsePhoneNumberFromString(fullNumber)?.number ?? fullNumber;
     setIsLoading(true);
 
-    try {
-      // Both calls are independent — fire in parallel to halve the wait.
-      await Promise.all([
-        onboardingApi.acceptLegal(e164),
-        onboardingApi.sendOtp({ phoneNumber: e164 }),
-      ]);
-      router.push({
-        pathname: '/otp-entry',
-        params: { phoneNumber: e164, displayPhone: phone },
-      });
-    } catch {
-      Alert.alert('Error', 'Failed to send OTP. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
+    Promise.all([
+      onboardingApi.acceptLegal(e164),
+      onboardingApi.sendOtp({ phoneNumber: e164 }),
+    ]).catch(() => {});
+
+    router.push({
+      pathname: '/otp-entry',
+      params: { phoneNumber: e164, displayPhone: phone },
+    });
   };
 
   return (
-    <View
+    <LinearGradient
       colors={[C.bg2, C.bg]}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 0.45 }}
@@ -319,7 +322,7 @@ export default function PhoneEntryScreen() {
           </Animated.View>
         </View>
       </Modal>
-    </View>
+    </LinearGradient>
   );
 }
 
