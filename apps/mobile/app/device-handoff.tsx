@@ -37,6 +37,7 @@ export default function DeviceHandoffScreen() {
   const userId = params.userId || '';
   const fromOtp = params.fromOtp === '1';
   const [isLoading, setIsLoading] = useState(true);
+  const { createSession } = useSession();
 
   const { createSession } = useSession();
   const createSessionRef = useRef(createSession);

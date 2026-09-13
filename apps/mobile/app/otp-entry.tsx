@@ -4,7 +4,7 @@ import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
+// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -306,6 +306,12 @@ export default function OtpEntryScreen() {
     setOtp(Array(BOXES).fill(''));
     setError('');
 
+    // Fire resend optimistically — update UI immediately, don't block on network.
+    setResendCooldown(30);
+    setExpirySeconds(CODE_LIFETIME);
+    setOtp(Array(BOXES).fill(''));
+    setError('');
+
     try {
       await onboardingApi.sendOtp({ phoneNumber });
     } catch (e: any) {
@@ -334,7 +340,7 @@ export default function OtpEntryScreen() {
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
-      <LinearGradient
+      <View
         colors={[C.bg2, C.bg]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.45 }}
@@ -446,7 +452,7 @@ export default function OtpEntryScreen() {
             </Pressable>
           </View>
         </View>
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 }
@@ -483,14 +489,14 @@ const styles = StyleSheet.create({
     fontSize: 30,
     lineHeight: 36,
     marginBottom: 12,
-    fontFamily: 'Lora-Bold',
+    fontFamily: 'Lato-Bold',
     fontWeight: '700',
   },
   sub: {
     color: C.inkDim,
     fontSize: 15,
     lineHeight: 21,
-    fontFamily: 'Inter-Regular',
+    fontFamily: 'Lato-Regular',
   },
   subRow: {
     flexDirection: 'row',
@@ -502,13 +508,13 @@ const styles = StyleSheet.create({
     color: C.accent,
     fontSize: 15,
     fontWeight: '600',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   editText: {
     color: C.text,
     fontSize: 13,
     textDecorationLine: 'underline',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   middle: {
     marginTop: 28,
@@ -532,7 +538,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     color: C.text,
     fontWeight: '600',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   boxFilled: { borderColor: C.ink },
   boxError: { borderColor: C.fail },
@@ -545,22 +551,22 @@ const styles = StyleSheet.create({
   error: {
     color: C.fail,
     fontSize: 12.5,
-    fontFamily: 'Inter-Regular',
+    fontFamily: 'Lato-Regular',
   },
   expiry: {
     color: C.inkDim,
     fontSize: 13.5,
-    fontFamily: 'Inter-Regular',
+    fontFamily: 'Lato-Regular',
   },
   expiryTime: {
     color: C.accent,
     fontWeight: '600',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   expired: {
     color: C.fail,
     fontSize: 12.5,
-    fontFamily: 'Inter-Regular',
+    fontFamily: 'Lato-Regular',
   },
   actionSection: {
     flex: 1,
@@ -581,18 +587,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     letterSpacing: 2,
     textTransform: 'uppercase',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   resend: { alignItems: 'center', marginTop: 16, paddingVertical: 6 },
   resendText: {
     color: C.inkDim,
     fontSize: 13.5,
-    fontFamily: 'Inter-Regular',
+    fontFamily: 'Lato-Regular',
   },
   resendLink: {
     color: C.accent,
     fontWeight: '600',
-    fontFamily: 'Inter-Medium',
+    fontFamily: 'Lato-Bold',
   },
   resendLinkDisabled: { color: C.inkDim },
 });

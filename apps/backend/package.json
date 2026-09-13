@@ -12,7 +12,6 @@
     "job:cleanup": "tsx src/jobs/cleanup.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.3",
     "@wpt/crypto": "workspace:*",
     "@wpt/shared": "workspace:*",
     "bcrypt": "^6.0.0",

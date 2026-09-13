@@ -108,6 +108,7 @@ interface Chat {
   messages: Message[];
   lastMessage?: string;
   lastMessageTime?: string;
+  unreadCount?: number;
 }
 
 type ChatEntry = { message: Message } | { dateKey: string };
