@@ -172,10 +172,10 @@ export default function ProfileSetupScreen() {
         photo: photo || undefined,
         about: about.trim() || DEFAULT_ABOUT,
       });
-      // After profile creation, handle Notifications then Contacts before
-      // entering the Chat List.
+      // After profile creation, explain the optional permissions (Notifications
+      // and Contacts) before entering the Chat List.
       router.replace({
-        pathname: '/notifications-info',
+        pathname: '/permission-intro',
         params: { phoneNumber: params.phoneNumber, displayPhone: params.displayPhone },
       });
     } catch (error: any) {

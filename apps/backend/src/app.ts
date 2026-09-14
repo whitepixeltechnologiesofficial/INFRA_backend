@@ -6,10 +6,8 @@ import { Server as SocketServer } from "socket.io";
 import { API_VERSION, SOCKET_NAMESPACE } from "@wpt/shared";
 import onboardingRoutes from "./routes/onboarding.js";
 import profileRoutes from "./routes/profile.js";
-import debugRoutes from "./routes/debug.js";
 import blocksRoutes from "./routes/blocks.js";
 import reportsRoutes from "./routes/reports.js";
-import moderationRoutes from "./routes/moderation.js";
 import relayRoutes from "./routes/relay.js";
 import {
   initSocketRegistry,
@@ -60,10 +58,8 @@ export function createApp(): BackendServer {
 
   app.use(`/api/${API_VERSION}/onboarding`, onboardingRoutes);
   app.use(`/api/${API_VERSION}/profile`, profileRoutes);
-  app.use(`/api/${API_VERSION}/debug`, debugRoutes);
   app.use(`/api/${API_VERSION}/blocks`, blocksRoutes);
   app.use(`/api/${API_VERSION}/reports`, reportsRoutes);
-  app.use(`/api/${API_VERSION}/moderation`, moderationRoutes);
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
 
   const httpServer = createServer(app);

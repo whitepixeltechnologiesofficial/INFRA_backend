@@ -139,27 +139,6 @@ export const useSession = () => {
     }
   };
 
-  /** Silent logout — clear all local state, navigate to phone-entry. */
-  const silentLogout = async () => {
-    setSessionValid(false);
-    setSessionMessage('Logged in on another device');
-    await SecureStore.deleteItemAsync('userId');
-    await SecureStore.deleteItemAsync('deviceId');
-    await SecureStore.deleteItemAsync('accessToken');
-    await SecureStore.deleteItemAsync('refreshToken');
-    await SecureStore.deleteItemAsync('displayPhone');
-    setIsAuthenticated(false);
-    setUserId(null);
-    setDeviceId(null);
-    setDisplayPhone(null);
-    router.replace('/phone-entry');
-  };
-
-  const checkSession = async () => {
-    if (!deviceId) return;
-    await validateSession(deviceId);
-  };
-
   /**
    * Silent logout — clear all local state, navigate to phone-entry.
    * NO warning, NO alert, NO toast: the cutoff must be silent (ONB-1.7).

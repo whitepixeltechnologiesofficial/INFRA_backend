@@ -56,10 +56,12 @@ import {
   checkCameraState,
   requestPhotosPermission,
   checkPhotosState,
+  checkNotificationsState,
   classifyFeatureGate,
   decideAttachAction,
   type FeatureGate,
 } from '@/lib/permissions';
+import { registerPushOnGrant } from '@/lib/push';
 
 const FONTS = {
   heading: 'Lato-Black',
@@ -1169,6 +1171,7 @@ export default function ChatListScreen() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [notificationsDenied, setNotificationsDenied] = useState(false);
 
   const setChatMessages = useCallback(
     (chatId: string, messages: Message[]) => {
@@ -1380,6 +1383,40 @@ export default function ChatListScreen() {
     return () => sub.remove();
   }, [showContactPicker, loadContactsForPicker]);
 
+  // PERM-2.13 (foreground re-detection, Task 13): whenever the app resumes,
+  // re-read the real OS state for Notifications — the OS is the source of
+  // truth. If it was granted via Settings while the app was backgrounded, the
+  // push token is (idempotently) registered so alerts fire on the next
+  // background; if it is denied, the Chat List shows the Notifications-denied
+  // banner. No native dialog ever opens from this listener, and there is no
+  // navigation side-effect, so returning to the foreground can't loop.
+  useEffect(() => {
+    let mounted = true;
+
+    const resyncNotifications = () => {
+      checkNotificationsState()
+        .then((state) => {
+          if (!mounted) return;
+          setNotificationsDenied(state === 'denied');
+          if (state === 'granted') {
+            registerPushOnGrant();
+          }
+        })
+        .catch(() => {});
+    };
+
+    resyncNotifications();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resyncNotifications();
+    });
+
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, []);
+
   const toggleSearch = () => {
     setShowSearch(!showSearch);
     if (showSearch) setSearchQuery('');
@@ -1410,6 +1447,12 @@ export default function ChatListScreen() {
 
       <View style={s.content}>
         <Header colors={colors} onSearchPress={toggleSearch} onMenuPress={() => setShowMenu(true)} />
+
+        {notificationsDenied && !selectedChat && (
+          <View style={s.notifBannerContainer}>
+            <PermissionBanner permissionId="notifications" />
+          </View>
+        )}
 
         {showSearch && (
           <View style={[s.searchContainer, { backgroundColor: colors.bg, borderBottomColor: colors.border }]}>
@@ -1551,6 +1594,7 @@ const s = StyleSheet.create({
   headerIcon: { padding: 4 },
 
   searchContainer: { paddingHorizontal: 20, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  notifBannerContainer: { paddingHorizontal: 20, paddingTop: 12 },
   searchInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',

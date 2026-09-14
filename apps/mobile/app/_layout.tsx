@@ -44,6 +44,7 @@ function RootLayoutInner() {
           <Stack.Screen name="legal-acceptance" options={{ headerShown: false }} />
           <Stack.Screen name="otp-entry" options={{ headerShown: false }} />
           <Stack.Screen name="profile-setup" options={{ headerShown: false }} />
+          <Stack.Screen name="permission-intro" options={{ headerShown: false }} />
           <Stack.Screen name="notifications-info" options={{ headerShown: false }} />
           <Stack.Screen name="permission-info" options={{ headerShown: false }} />
           <Stack.Screen name="device-handoff" options={{ headerShown: false }} />

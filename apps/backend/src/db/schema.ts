@@ -15,6 +15,8 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
+export { pushDevices } from "./push-devices-schema.js";
+
 // Drizzle's pg-core doesn't ship a built-in bytea type -- this is the
 // standard workaround (customType), used for the encrypted group
 // metadata columns in §6.3 / §8.11.

@@ -1,6 +1,6 @@
 // app/legal-acceptance.tsx
 import { router } from 'expo-router';
-// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -135,7 +135,7 @@ export default function LegalAcceptanceScreen() {
     : null;
 
   return (
-    <View
+    <LinearGradient
       colors={[C.bg2, C.bg]}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 0.45 }}
@@ -224,7 +224,7 @@ export default function LegalAcceptanceScreen() {
           </Pressable>
         </View>
       </View>
-    </View>
+    </LinearGradient>
   );
 }
 

@@ -20,7 +20,10 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.wptmobile"
+      "package": "com.anonymous.wptmobile",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "output": "static",
@@ -41,6 +44,15 @@
         }
       ],
       "expo-secure-store",
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "color": "#0B0F14",
+          "defaultChannel": "messages",
+          "icon": "./assets/images/notification-icon.png"
+        }
+      ],
       [
         "expo-camera",
         {
