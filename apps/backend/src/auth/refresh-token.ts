@@ -62,7 +62,7 @@ export async function issueRefreshToken({
 }: {
   userId: string;
   deviceId: string;
-  db?: AppDb;
+  db?: Pick<AppDb, "insert">;
 }): Promise<IssueRefreshTokenResult> {
   const db = dbParam ?? getDb();
 
