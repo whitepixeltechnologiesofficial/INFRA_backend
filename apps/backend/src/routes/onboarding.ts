@@ -215,10 +215,24 @@ router.post(
 
       // Resend cooldown check (independent 30s timer, §7.2)
       const [existing] = await db
-        .select({ sentAt: otpVerifications.sentAt })
+        .select({ sentAt: otpVerifications.sentAt, lockedUntil: otpVerifications.lockedUntil })
         .from(otpVerifications)
         .where(eq(otpVerifications.phoneNumber, phoneNumber))
         .limit(1);
+
+      // SEC (ONB-1.4): a fresh OTP must NOT clear an active lockout — sending
+      // a new code (and thus a fresh verification row) would reset the attempt
+      // counter and bypass the 30s block. Refuse resends while locked, mirroring
+      // the mobile mock contract (client handles OTP_LOCKED_OUT / 429).
+      if (existing && existing.lockedUntil && now < existing.lockedUntil) {
+        res.status(429).json({
+          error: "OTP_LOCKED_OUT",
+          secondsRemaining: Math.ceil(
+            (existing.lockedUntil.getTime() - now.getTime()) / 1000,
+          ),
+        });
+        return;
+      }
 
       if (existing) {
         const elapsed = now.getTime() - existing.sentAt.getTime();
