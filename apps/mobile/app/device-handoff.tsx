@@ -9,6 +9,10 @@
 // only presents the confirmation and continues into the app. The `fromOtp=1`
 // param distinguishes that path from a standalone handoff (e.g. a refresh-token
 // device add), where `createSession` performs the session takeover.
+//
+// ONB-1.1 — Provenance: userId and displayPhone are ALWAYS read from SecureStore
+// (set by otp-entry or a prior login). URL params are NEVER trusted for
+// identifiers — this closes the fabricated-deep-link bypass.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -22,67 +26,50 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSession } from '@/hooks/useSession';
 import { requireLegalAccepted } from '@/lib/legal-acceptance';
-import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
+import { STORE_KEYS } from '@/lib/onboarding-guard';
+import { useOnboardingGuard } from '@/providers/OnboardingGuardProvider';
 import * as SecureStore from 'expo-secure-store';
 
 export default function DeviceHandoffScreen() {
-  const params = useLocalSearchParams<{
-    phoneNumber?: string;
-    displayPhone?: string;
-    userId: string;
-    fromOtp?: string;
-  }>();
-  const phoneNumber = params.phoneNumber || '';
-  const displayPhone = params.displayPhone || '';
-  const userId = params.userId || '';
+  const params = useLocalSearchParams<{ fromOtp?: string }>();
   const fromOtp = params.fromOtp === '1';
   const [isLoading, setIsLoading] = useState(true);
   const { createSession } = useSession();
   const createSessionRef = useRef(createSession);
   createSessionRef.current = createSession;
+  const { markSession } = useOnboardingGuard();
 
   useEffect(() => {
     const performHandoff = async () => {
       try {
-        // LEGAL-GATE — protected screen: refuse to create a session unless the
-        // terms were accepted first (blocks direct deep-links).
         const legalAccepted = await requireLegalAccepted();
         if (!legalAccepted) {
           router.replace('/legal-acceptance');
           return;
         }
 
-        if (!fromOtp) {
-          // Standalone / refresh-token handoff: the session is created HERE via
-          // the handoff endpoint. (The OTP path skips this — OTP verify already
-          // established the session and wrote the identifiers to SecureStore.)
-          await createSessionRef.current(userId);
-        } else {
-          // OTP path: the identifiers were persisted by otp-entry. Make sure
-          // the session the backend knows about matches what is stored — the
-          // stable deviceId is preserved, so a re-verify would revoke this
-          // session's predecessor, not orphan it.
-          const storedUserId = await SecureStore.getItemAsync('userId');
-          if (!storedUserId) {
-            router.replace('/phone-entry');
-            return;
-          }
+        const storedUserId = await SecureStore.getItemAsync(STORE_KEYS.USER_ID);
+        if (!storedUserId) {
+          router.replace('/phone-entry');
+          return;
         }
 
-        // Store the formatted phone number for display in Settings/Chats
-        const raw = phoneNumber || displayPhone;
-        if (raw) {
-          const parsed = parsePhoneNumberFromString(raw);
-          const formatted = parsed ? parsed.formatInternational() : raw;
-          await SecureStore.setItemAsync('displayPhone', formatted);
+        if (!fromOtp) {
+          await createSessionRef.current(storedUserId);
         }
+
+        const storedDeviceId = await SecureStore.getItemAsync(STORE_KEYS.DEVICE_ID);
+        if (storedUserId && storedDeviceId) {
+          markSession(storedUserId, storedDeviceId);
+        }
+
         setIsLoading(false);
       } catch {
         setIsLoading(false);
       }
     };
     performHandoff();
-  }, [userId, phoneNumber, displayPhone, fromOtp]);
+  }, [fromOtp, markSession]);
 
   const handleContinue = () => {
     router.replace('/(tabs)');

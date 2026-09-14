@@ -13,6 +13,8 @@ import {
   BackHandler,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useOnboardingGuard } from '@/providers/OnboardingGuardProvider';
+import { decideSplashAction } from '@/lib/onboarding-guard';
 
 const RING_ENABLED = false;
 
@@ -29,8 +31,8 @@ const COLORS = {
 
 export default function Index() {
   const router = useRouter();
+  const { snapshot } = useOnboardingGuard();
 
-  // Block hardware back on the splash screen (no going "back" to nothing)
   useFocusEffect(
     useCallback(() => {
       const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
@@ -63,10 +65,11 @@ export default function Index() {
   }, [breathe]);
 
   const handlePress = useCallback(() => {
+    const action = decideSplashAction(snapshot);
     setTimeout(() => {
-      router.push('/legal-acceptance');
+      router.push(action);
     }, 250);
-  }, [router]);
+  }, [router, snapshot]);
 
   const haloScale = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.06] });
   const haloOpacity = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] });

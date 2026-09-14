@@ -20,7 +20,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as SecureStore from 'expo-secure-store';
 import { onboardingApi } from '@/api/onboardingApi';
+import { STORE_KEYS } from '@/lib/onboarding-guard';
 import {
   requestCameraPermission,
   requestPhotosPermission,
@@ -46,6 +48,7 @@ const DEFAULT_ABOUT = "Hey there! I'm using ONB";
 
 export default function ProfileSetupScreen() {
   const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();
+  const initialParamsRef = useRef(params);
   const [name, setName] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
   const [about, setAbout] = useState(DEFAULT_ABOUT);
@@ -54,7 +57,16 @@ export default function ProfileSetupScreen() {
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [cameraDenied, setCameraDenied] = useState(false);
   const [photosDenied, setPhotosDenied] = useState(false);
+  const [resolvedDisplayPhone, setResolvedDisplayPhone] = useState('');
   const appStateRef = useRef(AppState.currentState);
+
+  useEffect(() => {
+    (async () => {
+      const stored = await SecureStore.getItemAsync(STORE_KEYS.DISPLAY_PHONE);
+      const initial = initialParamsRef.current;
+      setResolvedDisplayPhone(stored || initial.displayPhone || initial.phoneNumber || '');
+    })();
+  }, []);
 
   const hasVisibleChars = (text: string): boolean => text.trim().length > 0;
   const isNameValid = hasVisibleChars(name);
@@ -176,7 +188,7 @@ export default function ProfileSetupScreen() {
       // and Contacts) before entering the Chat List.
       router.replace({
         pathname: '/permission-intro',
-        params: { phoneNumber: params.phoneNumber, displayPhone: params.displayPhone },
+        params: { phoneNumber: resolvedDisplayPhone || params.phoneNumber, displayPhone: resolvedDisplayPhone || params.displayPhone },
       });
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to set up profile.');
@@ -185,7 +197,7 @@ export default function ProfileSetupScreen() {
     }
   };
 
-  const displayPhone = params.displayPhone || params.phoneNumber || '';
+  const displayPhone = resolvedDisplayPhone || params.displayPhone || params.phoneNumber || '';
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
