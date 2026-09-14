@@ -90,6 +90,11 @@ export function createApp(): BackendServer {
         next(new Error("Token userId mismatch"));
         return;
       }
+      // The socket must claim the exact device that the token was issued to.
+      if (typeof payload.deviceId === "string" && payload.deviceId !== deviceId) {
+        next(new Error("Token deviceId mismatch"));
+        return;
+      }
       next();
     } catch {
       next(new Error("Invalid token"));

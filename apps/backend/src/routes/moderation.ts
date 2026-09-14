@@ -12,7 +12,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { dashboardAdmins } from "../db/dashboard-admins-schema.js";
 import { reports } from "../db/reports-schema.js";
@@ -50,19 +50,16 @@ const requireAdmin: AdminMiddleware = async (req, res, next) => {
 // All moderation routes require an admin token.
 router.use(requireAdmin as unknown as Parameters<typeof router.use>[0]);
 
-/** Validate the request shape. */
-function parsePayload(body: unknown): { ok: true; reportId: string; adminId: string } | { ok: false; error: string } {
-  const b = body as { reportId?: string; adminId?: string };
+/** Validate the request shape. actor is always the authenticated admin token. */
+function parsePayload(body: unknown): { ok: true; reportId: string } | { ok: false; error: string } {
+  const b = body as { reportId?: string };
   if (typeof b !== "object" || b === null) {
     return { ok: false, error: "Invalid request body" };
   }
   if (typeof b.reportId !== "string" || !b.reportId) {
     return { ok: false, error: "reportId is required" };
   }
-  if (typeof b.adminId !== "string" || !b.adminId) {
-    return { ok: false, error: "adminId is required" };
-  }
-  return { ok: true, reportId: b.reportId, adminId: b.adminId };
+  return { ok: true, reportId: b.reportId };
 }
 
 async function runModeration(
@@ -77,13 +74,22 @@ async function runModeration(
       return;
     }
 
+    // The acting admin is taken from the verified admin JWT (sub), never
+    // from the request body. Prevents admin-impersonation in the audit trail.
+    const actorAdminId: string = res.locals.auth!.sub;
+    if (typeof actorAdminId !== "string" || !actorAdminId) {
+      res.status(401).json({ error: "INVALID_ADMIN_TOKEN" });
+      return;
+    }
+
     const db = getDb();
 
-    // Security: the adminId in the body must match an existing admin.
+    // Security: bound parameters only — no raw string interpolation.
+    // (Previously sql.raw() allowed SQL injection via adminId/reportId.)
     const [adminRow] = await db
       .select({ id: dashboardAdmins.id })
       .from(dashboardAdmins)
-      .where(sql`${dashboardAdmins.id} = ${sql.raw(`'${parsed.adminId}'`)}::uuid`)
+      .where(eq(dashboardAdmins.id, actorAdminId))
       .limit(1);
 
     if (!adminRow) {
@@ -91,11 +97,11 @@ async function runModeration(
       return;
     }
 
-    // Verify the report exists.
+    // Verify the report exists (bound parameter).
     const [reportRow] = await db
       .select({ id: reports.id })
       .from(reports)
-      .where(sql`${reports.id} = ${sql.raw(`'${parsed.reportId}'`)}::uuid`)
+      .where(eq(reports.id, parsed.reportId))
       .limit(1);
 
     if (!reportRow) {
@@ -103,9 +109,10 @@ async function runModeration(
       return;
     }
 
-    // Call the transaction-safe PostgreSQL moderation function.
+    // Call the transaction-safe PostgreSQL moderation function — both
+    // values are passed as bound parameters (safe parameterization).
     await db.execute(
-      sql`SELECT public.moderate_report(${sql.raw(`'${parsed.reportId}'`)}::uuid, ${sql.raw(`'${parsed.adminId}'`)}::uuid, ${action}::public.audit_action)`,
+      sql`SELECT public.moderate_report(${parsed.reportId}::uuid, ${actorAdminId}::uuid, ${action}::public.audit_action)`,
     );
 
     res.json({ success: true, action, reportId: parsed.reportId });

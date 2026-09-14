@@ -73,6 +73,8 @@ export async function verifyAccessToken(
 
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
+    // Pin the algorithm — reject alg:none / RS256→HS256 confusion tokens.
+    algorithms: ["HS256"],
   });
 
   return toAccessTokenPayload(payload);

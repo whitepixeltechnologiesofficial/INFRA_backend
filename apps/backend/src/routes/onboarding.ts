@@ -15,7 +15,7 @@ import { Router, type Request, type Response } from "express";
 import {
   createHash,
   randomUUID,
-  randomBytes,
+  randomInt,
   timingSafeEqual,
 } from "node:crypto";
 import { eq, and, isNull, sql } from "drizzle-orm";
@@ -31,6 +31,7 @@ import {
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
 import { users } from "../db/users-schema.js";
+import { devices } from "../db/devices-schema.js";
 import { otpVerifications } from "../db/otp-verifications-schema.js";
 import { smsOutbox } from "../db/sms-outbox-schema.js";
 import { contactHashes } from "../db/contact-hashes-schema.js";
@@ -38,7 +39,6 @@ import { pushForceLogout } from "../ws/socket-registry.js";
 import { deliverOtpCode } from "../sms/sender.js";
 import { requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { isValidE164 } from "../middleware/validation.js";
 import { phoneHash } from "../utils/phone-hash.js";
 import { normalizePhoneNumber } from "../utils/phone-normalize.js";
 
@@ -55,14 +55,45 @@ const RESEND_COOLDOWN_MS = 30_000; // 30 seconds (independent of lockout)
  * OTP helper functions.
  */
 function generateOtpCode(): string {
-  const bytes = randomBytes(OTP_LENGTH);
-  return Array.from(bytes)
-    .map((b) => (b % 10).toString())
-    .join("");
+  // Uniform digits via crypto.randomInt — avoids the modulo bias of byte % 10
+  // (which made digits 0-5 ~4% more likely than 6-9 and shrank the search space).
+  let code = "";
+  for (let i = 0; i < OTP_LENGTH; i++) {
+    code += String(randomInt(0, 10));
+  }
+  return code;
 }
 
 function hashOtpCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
+}
+
+/**
+ * Normalize/validate the phone number in the body ahead of rate limiting,
+ * so the rate-limit key is the canonical E.164 form (not attacker-varable
+ * formatting). Stores the result in res.locals.normalizedPhone.
+ */
+function withNormalizedPhone(req: Request, res: Response, next: () => void): void {
+  const raw = (req.body as { phoneNumber?: unknown } | null)?.phoneNumber;
+  if (typeof raw !== "string") {
+    res.status(400).json({ error: "phoneNumber is required" });
+    return;
+  }
+  const normalized = normalizePhoneNumber(raw);
+  if (!normalized) {
+    res.status(400).json({ error: "INVALID_PHONE" });
+    return;
+  }
+  res.locals.normalizedPhone = normalized;
+  next();
+}
+
+/** Rate-limit key from the normalized phone stored by withNormalizedPhone. */
+function normalizedPhoneKey(prefix: string) {
+  return (req: Request) => {
+    const locals = (req.res?.locals ?? {}) as { normalizedPhone?: string };
+    return locals.normalizedPhone ? `${prefix}:${locals.normalizedPhone}` : req.ip ?? req.socket.remoteAddress ?? "unknown";
+  };
 }
 
 /**
@@ -140,6 +171,19 @@ async function executeHandoffTransaction({
       }
     }
 
+    // Ensure a matching device row exists so relay/send (sender_device_id
+    // uuid FK) works with the device id minted for this session.
+    await tx
+      .insert(devices)
+      .values({
+        id: deviceId,
+        userId,
+        deviceType: "phone",
+        platform: "android",
+        identityPublicKey: `pf_${deviceId}`,
+      })
+      .onConflictDoNothing();
+
     const revokeResult = await tx
       .update(sessions)
       .set({ revokedAt: new Date() })
@@ -176,10 +220,19 @@ async function executeHandoffTransaction({
 // ──────────────────────────────────────────────────
 router.post("/accept-legal", async (req: Request, res: Response) => {
   try {
-    const { phoneNumber } = req.body as { phoneNumber?: string };
+    const { phoneNumber: rawPhoneNumber } = req.body as { phoneNumber?: string };
 
-    if (!phoneNumber || typeof phoneNumber !== "string") {
+    if (!rawPhoneNumber || typeof rawPhoneNumber !== "string") {
       res.status(400).json({ error: "phoneNumber is required" });
+      return;
+    }
+
+    // Normalize and validate — without this, an arbitrary string would be
+    // stored and later fail to match the E.164 form used by OTP verify
+    // (causing a self-DoS) and opens the door to garbage rows.
+    const phoneNumber = normalizePhoneNumber(rawPhoneNumber);
+    if (!phoneNumber) {
+      res.status(400).json({ error: "INVALID_PHONE" });
       return;
     }
 
@@ -201,32 +254,16 @@ router.post("/accept-legal", async (req: Request, res: Response) => {
 // ──────────────────────────────────────────────────
 router.post(
   "/otp/send",
+  withNormalizedPhone,
   rateLimit({
     maxRequests: 3,
     windowMs: 60_000,
-    keyFn: (req) => `otp-send:${req.body?.phoneNumber ?? req.ip}`,
+    keyFn: normalizedPhoneKey("otp-send"),
     message: "Too many OTP requests. Please wait before retrying.",
   }),
-  async (req: Request, res: Response) => {
+  async (_req: Request, res: Response) => {
     try {
-      const { phoneNumber: rawPhoneNumber } = req.body as { phoneNumber?: string };
-
-      if (!rawPhoneNumber || typeof rawPhoneNumber !== "string") {
-        res.status(400).json({ error: "phoneNumber is required" });
-        return;
-      }
-
-      // Normalize phone number to E.164 format (supports different input formats)
-      const phoneNumber = normalizePhoneNumber(rawPhoneNumber);
-
-      if (!phoneNumber) {
-        res.status(400).json({
-          error: "INVALID_PHONE",
-          message: "Phone number must be valid (e.g. +1234567890, or 1234567890 with country)",
-        });
-        return;
-      }
-
+      const phoneNumber = (res.locals as { normalizedPhone?: string }).normalizedPhone as string;
       const db = getDb();
       const now = new Date();
 
@@ -289,29 +326,20 @@ router.post(
 // ──────────────────────────────────────────────────
 router.post(
   "/otp/verify",
+  withNormalizedPhone,
   rateLimit({
     maxRequests: 5,
     windowMs: 60_000,
-    keyFn: (req) => `otp-verify:${req.body?.phoneNumber ?? req.ip}`,
+    keyFn: normalizedPhoneKey("otp-verify"),
     message: "Too many verification attempts. Please wait.",
   }),
   async (req: Request, res: Response) => {
     try {
-      const { phoneNumber: rawPhoneNumber, code } = req.body as {
-        phoneNumber?: string;
-        code?: string;
-      };
+      const phoneNumber = (res.locals as { normalizedPhone?: string }).normalizedPhone as string;
+      const { code } = req.body as { code?: string };
 
-      if (!rawPhoneNumber || !code) {
+      if (!code) {
         res.status(400).json({ error: "phoneNumber and code are required" });
-        return;
-      }
-
-      // Normalize phone number to E.164 format (supports different input formats)
-      const phoneNumber = normalizePhoneNumber(rawPhoneNumber);
-
-      if (!phoneNumber) {
-        res.status(400).json({ error: "INVALID_PHONE" });
         return;
       }
 
@@ -369,33 +397,34 @@ router.post(
       const presentedHash = hashOtpCode(code);
 
       if (!timingSafeHashCompare(presentedHash, record.codeHash)) {
-        // Wrong code — atomic increment attempts (prevents race condition)
-        const newAttempts = record.attempts + 1;
-        const remaining = MAX_ATTEMPTS - newAttempts;
+        // Wrong code — atomic increment (SET attempts = attempts + 1). A
+        // plain per-request read+GREATEST() collapses concurrent guesses into
+        // one increment, letting attackers race past the 3-attempt lockout.
+        const [updated] = await db
+          .update(otpVerifications)
+          .set({ attempts: sql`${otpVerifications.attempts} + 1` })
+          .where(eq(otpVerifications.phoneNumber, phoneNumber))
+          .returning({ attempts: otpVerifications.attempts });
 
-        if (remaining <= 0) {
+        const attempts = updated?.attempts ?? record.attempts + 1;
+
+        if (attempts >= MAX_ATTEMPTS) {
           const lockedUntil = new Date(now.getTime() + LOCKOUT_MS);
           await db
             .update(otpVerifications)
-            .set({ attempts: newAttempts, lockedUntil })
+            .set({ lockedUntil })
             .where(eq(otpVerifications.phoneNumber, phoneNumber));
 
           res.json({ status: "attempts_exhausted" });
           return;
         }
 
-        // Atomic increment: SET attempts = attempts + 1 (no read-modify-write)
-        await db
-          .update(otpVerifications)
-          .set({ attempts: sql`GREATEST(${otpVerifications.attempts} + 1, ${newAttempts})` })
-          .where(eq(otpVerifications.phoneNumber, phoneNumber));
-
-        res.json({ status: "wrong_code", attemptsRemaining: remaining });
+        res.json({ status: "wrong_code", attemptsRemaining: MAX_ATTEMPTS - attempts });
         return;
       }
 
       // SUCCESS — Atomic handoff transaction
-      const deviceId = `device_${Date.now()}_${randomBytes(4).toString("hex")}`;
+      const deviceId = randomUUID();
       const result = await executeHandoffTransaction({
         userId: "",
         deviceId,
@@ -511,6 +540,14 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
       return;
     }
 
+    // devices.id is a uuid column — coerce arbitrary client device ids to a
+    // uuid so the handoff can bind relay/send (FK on sender_device_id).
+    const clientDeviceId = deviceInfo.deviceId;
+    const deviceId =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientDeviceId)
+        ? clientDeviceId
+        : randomUUID();
+
     // Validate the refresh token — proves the caller owns this account
     const session = await validateRefreshToken(presentedToken);
     if (!session) {
@@ -520,7 +557,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
 
     const handoff = await executeHandoffTransaction({
       userId: session.userId,
-      deviceId: deviceInfo.deviceId,
+      deviceId,
     });
 
     res.json({

@@ -17,12 +17,22 @@ import { reports } from "../db/reports-schema.js";
 import { reportEvidence } from "../db/report-evidence-schema.js";
 import { users } from "../db/users-schema.js";
 import { requireAuth } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 import { isValidE164 } from "../middleware/validation.js";
 import { phoneHash } from "../utils/phone-hash.js";
 
 const router: Router = Router();
 
 router.use(requireAuth);
+
+// Moderation-queue spam guard: bound how fast one user can file reports
+// (previously unlimited → an attacker could flood the review backlog).
+const fileReportLimit = rateLimit({
+  maxRequests: 10,
+  windowMs: 60_000,
+  keyFn: (req) => `reports-file:${req.res?.locals.auth?.sub ?? req.ip ?? "unknown"}`,
+  message: "Too many reports filed. Please wait.",
+});
 
 /** Resolve the authenticated user's phone hash from their user row. */
 async function resolveSelfPhoneHash(authUserId: string): Promise<string | null> {
@@ -46,7 +56,7 @@ async function resolveSelfPhoneHash(authUserId: string): Promise<string | null> 
 //   }>
 // }
 // ──────────────────────────────────────────────────
-router.post("/file", async (req: Request, res: Response) => {
+router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
     const { reportedPhone, reason, messages } = req.body as {

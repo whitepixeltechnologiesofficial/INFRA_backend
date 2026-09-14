@@ -11,7 +11,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, or, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { devices } from "../db/devices-schema.js";
@@ -20,6 +20,25 @@ import { messageRelay } from "../db/message-relay-schema.js";
 const router: Router = Router();
 
 router.use(requireAuth);
+
+/** Allowed message types (mirrors the DB enum to avoid 22P02 500s). */
+const MESSAGE_TYPES = new Set(["text", "image", "video", "audio", "file", "system"]);
+
+/** Strict hex ciphertext validation — reject silently-truncated garbage. */
+function isValidHexCiphertext(v: unknown): v is string {
+  if (typeof v !== "string" || !v) return false;
+  if (v.length % 2 !== 0) return false;
+  if (v.length > 200_000) return false; // ~100 KB binary, matches 100kb body cap
+  return /^[0-9a-fA-F]+$/.test(v);
+}
+
+/** Whether a message is addressed to a given user (user fan-out OR device ownership). */
+function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
+  return or(
+    eq(messageRelay.recipientUserId, authUserId),
+    sql`EXISTS (SELECT 1 FROM devices WHERE devices.id = ${messageRelay.recipientDeviceId} AND devices.user_id = ${authUserId})`,
+  )!;
+}
 
 // ──────────────────────────────────────────────────
 // POST /relay/send
@@ -52,8 +71,14 @@ router.post("/send", async (req: Request, res: Response) => {
       messageType?: string;
     };
 
-    if (typeof ciphertext !== "string" || !ciphertext) {
-      res.status(400).json({ error: "ciphertext is required" });
+    if (!isValidHexCiphertext(ciphertext)) {
+      res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+      return;
+    }
+
+    const msgType = messageType ?? "text";
+    if (!MESSAGE_TYPES.has(msgType)) {
+      res.status(400).json({ error: "INVALID_MESSAGE_TYPE" });
       return;
     }
 
@@ -65,6 +90,8 @@ router.post("/send", async (req: Request, res: Response) => {
     }
 
     const db = getDb();
+    const ciphertextBytes = Buffer.from(ciphertext, "hex");
+    const sizeBytes = ciphertextBytes.length;
 
     // If recipientUserId is given, fan out one row per device.
     if (recipientUserId) {
@@ -85,9 +112,9 @@ router.post("/send", async (req: Request, res: Response) => {
             senderDeviceId: authDeviceId,
             recipientDeviceId: d.id,
             recipientUserId,
-            ciphertext: Buffer.from(ciphertext, "hex"),
-            messageType: messageType ?? "text",
-            sizeBytes: Buffer.byteLength(ciphertext, "hex"),
+            ciphertext: ciphertextBytes,
+            messageType: msgType,
+            sizeBytes,
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           })),
         )
@@ -112,9 +139,9 @@ router.post("/send", async (req: Request, res: Response) => {
         recipientDeviceId,
         recipientUserId: null,
         recipientGroupId: recipientGroupId ?? null,
-        ciphertext: Buffer.from(ciphertext, "hex"),
-        messageType: messageType ?? "text",
-        sizeBytes: Buffer.byteLength(ciphertext, "hex"),
+        ciphertext: ciphertextBytes,
+        messageType: msgType,
+        sizeBytes,
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       })
       .returning({
@@ -192,7 +219,12 @@ router.post("/ack", async (req: Request, res: Response) => {
     const [updated] = await db
       .update(messageRelay)
       .set({ deliveredAt: new Date() })
-      .where(eq(messageRelay.id, messageId))
+      .where(
+        and(
+          eq(messageRelay.id, messageId),
+          isAddressedToUser(authUserId),
+        ),
+      )
       .returning({ id: messageRelay.id, deliveredAt: messageRelay.deliveredAt });
 
     if (!updated) {
