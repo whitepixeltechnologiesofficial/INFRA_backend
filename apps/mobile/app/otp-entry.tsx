@@ -21,6 +21,8 @@ import * as SecureStore from 'expo-secure-store';
 import { useRouteGuard } from '@/hooks/useRouteGuard';
 import { getOrCreateDeviceId } from '@/lib/device-identity';
 import { resolvePostLoginRoute } from '@/lib/session-policy';
+import { STORE_KEYS } from '@/lib/onboarding-guard';
+import { useOnboardingGuard } from '@/providers/OnboardingGuardProvider';
 //import * as Device from 'expo-device'; // optional, fallback provided
 
 const C = {
@@ -57,6 +59,7 @@ export default function OtpEntryScreen() {
   const params = useLocalSearchParams<{ phoneNumber: string; displayPhone?: string }>();
   const phoneNumber = params.phoneNumber || '';
   const displayPhone = params.displayPhone || '';
+  const { markSession } = useOnboardingGuard();
 
   const [otp, setOtp] = useState<string[]>(Array(BOXES).fill(''));
   const [isLocked, setIsLocked] = useState(false);
@@ -173,12 +176,15 @@ export default function OtpEntryScreen() {
           // deviceId written here is the SAME stable identity used for OTP, so
           // the stored session matches the backend's session registry row.
           await Promise.all([
-            SecureStore.setItemAsync('userId', result.userId),
-            SecureStore.setItemAsync('deviceId', deviceId),
-            SecureStore.setItemAsync('accessToken', result.accessToken),
-            SecureStore.setItemAsync('refreshToken', result.refreshToken),
-            SecureStore.setItemAsync('displayPhone', displayPhone),
+            SecureStore.setItemAsync(STORE_KEYS.USER_ID, result.userId),
+            SecureStore.setItemAsync(STORE_KEYS.DEVICE_ID, deviceId),
+            SecureStore.setItemAsync(STORE_KEYS.ACCESS_TOKEN, result.accessToken),
+            SecureStore.setItemAsync(STORE_KEYS.REFRESH_TOKEN, result.refreshToken),
+            SecureStore.setItemAsync(STORE_KEYS.DISPLAY_PHONE, displayPhone),
+            SecureStore.setItemAsync(STORE_KEYS.PHONE_NUMBER, phoneNumber),
           ]);
+
+          markSession(result.userId, deviceId);
 
           const route = resolvePostLoginRoute({
             routing: result.routing,
@@ -232,7 +238,7 @@ export default function OtpEntryScreen() {
         setIsVerifying(false);
       }
     },
-    [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake],
+    [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake, markSession],
   );
 
   // Auto-verify once the mock OTP is fully filled — only in the explicit dev

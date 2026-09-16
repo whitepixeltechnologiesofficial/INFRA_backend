@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Fonts } from '@/constants/typography';
 import { recordLegalAcceptance } from '@/lib/legal-acceptance';
+import { useOnboardingGuard } from '@/providers/OnboardingGuardProvider';
 
 const C = {
   bg: '#0B0F14',
@@ -85,6 +86,7 @@ export default function LegalAcceptanceScreen() {
   const [hasReadTerms, setHasReadTerms] = useState(false);
   const [viewportH, setViewportH] = useState(0);
   const [contentH, setContentH] = useState(0);
+  const { markLegalAccepted } = useOnboardingGuard();
 
   const goBack = useCallback(() => {
     router.back();
@@ -103,8 +105,9 @@ export default function LegalAcceptanceScreen() {
     try {
       await recordLegalAcceptance();
     } catch {
-      // Ignored: phone-entry/otp-entry re-check the gate and bounce back.
+      // phone-entry/otp-entry re-check the gate and bounce back.
     }
+    markLegalAccepted();
     router.push('/phone-entry');
   };
 

@@ -1,0 +1,213 @@
+{
+  "metadata": {
+    "artifact_type": "ONB-1.1-V_RETEST_VERIFICATION_RESULTS",
+    "audience": "opencode-agent",
+    "created_from": "apps/mobile/report_gen generator",
+    "generated_on": "2026-09-15",
+    "status_totals_note": "REQUIRES DEVICE TEST is NOT counted as PASS"
+  },
+  "project": {
+    "repository": "INFRA_backend",
+    "remote": "https://github.com/wpt-project/INFRA_backend.git",
+    "mobile_path": "apps/mobile/",
+    "framework": "Expo SDK 57 / React Native 0.86 / expo-router 57",
+    "branch": "permission",
+    "branch_state": "local branch; 1 commit ahead of origin/permission",
+    "fix_commit": "6b1133bb27edb18bd2958d3c8a1da8b9813efd3f",
+    "fix_commit_short": "6b1133b",
+    "fix_commit_message": "fix(onboarding): add Stack.Protected route guards to prevent bypass via deep link",
+    "base_commit": "9572feee958418d9c03db5440ceca12c4d768d04"
+  },
+  "artifacts": {
+    "report_docx": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\apps\\mobile\\report_gen\\ONB-1.1-V_Team_Alpha_Retest_Report.docx",
+    "report_docx_copy": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\ONB-1.1-V_Team_Alpha_Retest_Report.docx",
+    "manual_device_test_script": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\ONB-1.1-V_Manual_Device_Test.md",
+    "report_generator_dir": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\apps\\mobile\\report_gen",
+    "report_generator_main": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\apps\\mobile\\report_gen\\main.py",
+    "report_generator_command": "python main.py  (run from report_gen dir; python-docx required)",
+    "expo_dev_server_log": "C:\\Users\\s.satheesh kumar\\Downloads\\white_pixel\\INFRA_backend\\apps\\mobile\\report_gen\\expo_server.log"
+  },
+  "summary_counts": {
+    "total_test_cases": 12,
+    "pass": 6,
+    "fail": 0,
+    "not_retested": 0,
+    "requires_device_test": 6,
+    "overall_verdict": "INCOMPLETE",
+    "overall_verdict_reason": "Code fixes verified; TC-05..TC-10 still need physical Android/Expo Go execution."
+  },
+  "test_cases": [
+    {
+      "tc_id": "TC-01",
+      "type": "UI/Nav",
+      "objective": "Splash CTA tab navigates to legal acceptance",
+      "original_status": "PASS",
+      "problem_found": "None",
+      "fix_made": "No change needed (already correct)",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "Tab on splash opens /legal-acceptance",
+      "actual_result": "handlePress runs router.push('/legal-acceptance')",
+      "evidence": "app/OnboardingScreen.tsx:68-72",
+      "final_status": "PASS"
+    },
+    {
+      "tc_id": "TC-02",
+      "type": "UI/Nav",
+      "objective": "No Skip option on splash",
+      "original_status": "PASS",
+      "problem_found": "None",
+      "fix_made": "No change needed",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "No Skip button/link",
+      "actual_result": "Only 'Tab to proceed' CTA; no skip control rendered",
+      "evidence": "app/OnboardingScreen.tsx (full render)",
+      "final_status": "PASS"
+    },
+    {
+      "tc_id": "TC-03",
+      "type": "UI/Nav",
+      "objective": "No swipe gesture bypasses splash",
+      "original_status": "PASS",
+      "problem_found": "None",
+      "fix_made": "No change needed",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "Swipe does not advance flow",
+      "actual_result": "Root is a Pressable; no gesture navigable container",
+      "evidence": "app/OnboardingScreen.tsx (structure)",
+      "final_status": "PASS"
+    },
+    {
+      "tc_id": "TC-04",
+      "type": "UI/Nav",
+      "objective": "No 'Continue as Guest' option",
+      "original_status": "PASS",
+      "problem_found": "None",
+      "fix_made": "No change needed",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "Guest path absent",
+      "actual_result": "No guest control anywhere in onboarding",
+      "evidence": "OnboardingScreen.tsx + onboard_flow.md",
+      "final_status": "PASS"
+    },
+    {
+      "tc_id": "TC-05",
+      "type": "Hardware",
+      "objective": "Android Back cannot exit/bypass onboarding",
+      "original_status": "FAIL",
+      "problem_found": "BackHandler only in index.tsx wrapper; second splash had no handler",
+      "fix_made": "BackHandler centralized into OnboardingScreen via useFocusEffect; app/splash.tsx deleted",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Back on splash is swallowed; app stays open",
+      "actual_result": "Code attaches hardwareBackPress handler returning true on focus; OS-level behavior not executed in this session",
+      "evidence": "CODE: app/OnboardingScreen.tsx:36-41. DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-06",
+      "type": "Security",
+      "objective": "Protected deep links cannot reach screens early",
+      "original_status": "FAIL",
+      "problem_found": "Flat unguarded Stack exposed every route (otp-entry, profile-setup, device-handoff, (tabs))",
+      "fix_made": "Stack.Protected guards + OnboardingContext flags in _layout.tsx",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Direct deep link bounces to splash anchor",
+      "actual_result": "Guards present for otp-entry/profile-setup/device-handoff/(tabs); real deep-link open not executed",
+      "evidence": "CODE: app/_layout.tsx guard blocks. DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-07",
+      "type": "Security",
+      "objective": "Fabricated phone deep link to /device-handoff rejected",
+      "original_status": "FAIL",
+      "problem_found": "No phone validation in device-handoff",
+      "fix_made": "isValidPhoneNumber (libphonenumber-js/mobile) + '+' prefix check before handoff logic",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Fake number redirected to splash",
+      "actual_result": "Validation logic rejects non-E.164 inputs; fabricated-number link not opened on device",
+      "evidence": "CODE: app/device-handoff.tsx:27-30. DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-08",
+      "type": "Security",
+      "objective": "Different fabricated phone number also rejected",
+      "original_status": "FAIL",
+      "problem_found": "Same missing validation (systemic)",
+      "fix_made": "Same format-based guard as TC-07 covers all fabrications",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Any fake number redirected to splash",
+      "actual_result": "Validation is format-based (libphonenumber-js) so covers arbitrary inputs; not executed on device",
+      "evidence": "CODE: app/device-handoff.tsx:27-30. DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-09",
+      "type": "Security",
+      "objective": "Direct /profile-setup deep link blocked",
+      "original_status": "FAIL",
+      "problem_found": "profile-setup was public; no otpVerified state consulted",
+      "fix_made": "profile-setup + device-handoff wrapped in Stack.Protected guard=otpVerified; otp-entry sets markOtpVerified() on success",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Direct open bounces to splash",
+      "actual_result": "Guard present; direct-link opening not executed on device",
+      "evidence": "CODE: _layout.tsx guard + otp-entry.tsx markOtpVerified(). DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-10",
+      "type": "Security",
+      "objective": "Cold start / cleared state blocks protected deep links",
+      "original_status": "FAIL",
+      "problem_found": "No onboarding state existed, so cleared state was indistinguishable from unlocked",
+      "fix_made": "OnboardingContext flags are in-memory only, all default false (INITIAL_STATE), never persisted",
+      "retest_method": "REQUIRES DEVICE TEST",
+      "expected_result": "Cleared data / cold start -> all deep links bounce to splash",
+      "actual_result": "State design guarantees false defaults on cold start; cleared-state run not executed",
+      "evidence": "CODE: hooks/OnboardingContext.tsx INITIAL_STATE. DEVICE: not executed",
+      "final_status": "REQUIRES DEVICE TEST"
+    },
+    {
+      "tc_id": "TC-11",
+      "type": "Nav",
+      "objective": "Second /splash implementation removed",
+      "original_status": "FAIL",
+      "problem_found": "Duplicate splash route app/splash.tsx auto-registered, no BackHandler, no guard",
+      "fix_made": "app/splash.tsx deleted (-356 lines); splash consolidated into OnboardingScreen.tsx (anchor)",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "/splash route does not resolve",
+      "actual_result": "File absent from app/; no /splash route can register",
+      "evidence": "Commit 6b1133b deletes app/splash.tsx; Test-Path False on app/splash.tsx",
+      "final_status": "PASS"
+    },
+    {
+      "tc_id": "TC-12",
+      "type": "VCS",
+      "objective": "Tested code provenance = Team Alpha",
+      "original_status": "PASS",
+      "problem_found": "None",
+      "fix_made": "Verification on permission branch @ commit 6b1133b",
+      "retest_method": "CODE VERIFIED",
+      "expected_result": "Branch/commit match Team Alpha fix",
+      "actual_result": "git branch --show-current = permission; git log -1 = 6b1133b",
+      "evidence": "Terminal output: git status / git log / git remote -v (2026-09-15)",
+      "final_status": "PASS"
+    }
+  ],
+  "device_testing_required": {
+    "pending_cases": ["TC-05", "TC-06", "TC-07", "TC-08", "TC-09", "TC-10"],
+    "how_to_run": "Follow sections 2-3 of ONB-1.1-V_Manual_Device_Test.md. Expo Go URL pattern: exp://<PC_LAN_IP>:8081/--/<route>",
+    "expo_go_url_example": "exp://192.168.1.3:8081/--/profile-setup",
+    "adb_deep_link_example_powershell": "& adb shell am start -a android.intent.action.VIEW -d \"exp://192.168.1.3:8081/--/device-handoff?phoneNumber=1234567890\"",
+    "adb_fabricated_second": "exp://192.168.1.3:8081/--/device-handoff?phoneNumber=%2B1111111111",
+    "adb_back_button": "Hardware Back on splash -> app must stay open",
+    "cold_start_note": "Clear Expo Go data before TC-10, then deep link immediately."
+  },
+  "next_steps_for_next_agent": [
+    "Run pending device tests (TC-05..TC-10) on Android emulator or physical device via Expo Go.",
+    "After tests pass, update part4.py SUMMARY (pass/device counts) and the verdict string in part4._verdict, then re-run: python main.py from apps/mobile/report_gen.",
+    "Update retest tables' final_status fields for the now-device-tested cases and mark evidence as DEVICE TESTED with screenshot paths.",
+    "Copy regenerated DOCX to repository root as ONB-1.1-V_Team_Alpha_Retest_Report.docx.",
+    "Do NOT modify application source code; only report artifacts under report_gen/ and the manual test doc."
+  ]
+}
