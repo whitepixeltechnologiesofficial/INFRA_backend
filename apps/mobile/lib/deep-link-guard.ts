@@ -2,19 +2,31 @@
 //
 // DEEP-LINK / QR GATE — parses scanned deep links and decides routing.
 //
-// A scanned QR payload is untrusted attacker-controlled input. It is ROUTING
-// CONTEXT ONLY and must never be treated as proof of identity. A phone number
-// in a QR URL never creates a session, never marks an OTP verified, and never
-// reaches Chat List / Profile Setup / Device Handoff.
+// A scanned QR payload / URL is untrusted attacker-controlled input. It is
+// ROUTING CONTEXT ONLY and must never be treated as proof of identity:
 //
-// Two layers of security:
-//   1. Provenance (in qr-link.ts): browser URLs open only for trusted hosts.
-//   2. Gating (here): app routes go through decideGateForRoute — the same
-//      decision the root DeepLinkGuard uses.
+//   URL ──> phoneNumber parameter ──> NOT authenticated
+//   URL ──> phoneNumber parameter ──> NOT marked OTP-verified
+//   URL ──> phoneNumber parameter ──> NOT given a session
+//   URL ──> phoneNumber parameter ──> NOT sent to Chat List / Profile Setup /
+//                                      Device Handoff
 //
-// Pure + dependency-free (Node-verifiable).
+// On a fresh/unauthenticated state ANY deep link that targets a protected
+// route funnels to `legal-acceptance` and STAYS there until the user
+// explicitly clicks Continue/Accept. The decision uses ONLY the locally
+// resolved SecureStore snapshot (legal acceptance + session). This module
+// NEVER writes auth state — legal is never marked accepted here, a session is
+// never created, an OTP is never verified.
+//
+// This is the reconciled implementation: it keeps the local parser + provenance
+// behavior (custom schemes like `wptmobile://`, HTTPS limited to the known app
+// host, Expo `exp://` marker, bare paths) and adds the tier-based gate helpers
+// the Team Alpha app uses (`normalizeRouteKey`, `decideDeepLinkGate`,
+// `decideGateForRoute` -> string | null where null = allowed).
+//
+// Pure + dependency-free so the contract is Node-verifiable without a device.
 
-import { OnboardingSnapshot } from './onboarding-guard';
+import { OnboardingSnapshot, RouteTier, ROUTE_TIERS } from './onboarding-guard';
 
 export interface DeepLinkIntent {
   pathname: string;
@@ -22,7 +34,10 @@ export interface DeepLinkIntent {
   hasPhoneNumber: boolean;
 }
 
-const AUTH_PARAM_KEYS = [
+/** Auth-significant query keys a deep link may carry. A URL param is NEVER
+ *  trusted as identity — this list only drives `hasAuthParam` detection used
+ *  by the scanner, never the gate decision. */
+export const AUTH_PARAM_KEYS = [
   'phoneNumber',
   'phone',
   'userId',
@@ -34,18 +49,10 @@ const AUTH_PARAM_KEYS = [
   'token',
 ];
 
-const AUTH_PATHNAMES = new Set(['device-handoff']);
-
-const PUBLIC_ROUTES = new Set([
-  'legal-acceptance',
-  'phone-entry',
-  'otp-entry',
-]);
-
-// Hosts that may produce HTTPS universal links resolving to app routes. Any
-// other HTTPS host (including example.com-style public hosts) is NOT an app
-// deep link — it is at best a browser URL to be provenance-checked, never an
-// authenticated route.
+/** Hosts that may produce HTTPS universal links resolving to app routes. Any
+ *  other HTTPS host (including example.com-style public hosts) is NOT an app
+ *  deep link — it is at best a browser URL to be provenance-checked, never an
+ *  authenticated route. */
 const KNOWN_APP_HOSTS = ['onb.test'];
 
 function isKnownAppHost(host: string): boolean {
@@ -72,8 +79,21 @@ const APP_ROUTES = new Set([
   'voice-note',
 ]);
 
-export function parseDeepLink(raw: string): DeepLinkIntent | null {
-  const s = (raw ?? '').trim();
+/** Strip leading/trailing slashes + percent-encoding from a route key. */
+export function normalizeRouteKey(raw: string): string {
+  let p = (raw ?? '').trim();
+  if (p.startsWith('/')) p = p.slice(1);
+  if (p.endsWith('/')) p = p.slice(0, -1);
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // leave as-is on malformed encoding
+  }
+  return p;
+}
+
+export function parseDeepLink(input: string | null | undefined): DeepLinkIntent | null {
+  const s = (input ?? '').trim();
   if (!s) return null;
 
   // HTTPS universal link — must be handled BEFORE custom-scheme check since
@@ -107,6 +127,8 @@ export function parseDeepLink(raw: string): DeepLinkIntent | null {
       const pathPart = qIdx >= 0 ? rest.slice(0, qIdx) : rest;
       const queryPart = qIdx >= 0 ? rest.slice(qIdx + 1) : '';
       const pathname = decodeURIComponent(pathPart);
+      // A deep link targeting the app root carries no route — treat as null.
+      if (!pathname) return null;
       const params: Record<string, string> = {};
       let hasPhoneNumber = false;
       for (const pair of queryPart.split('&')) {
@@ -148,8 +170,14 @@ export function parseDeepLink(raw: string): DeepLinkIntent | null {
   // Bare path: /route-name?params
   if (s.startsWith('/')) {
     const qIdx = s.indexOf('?');
-    const pathname = qIdx >= 0 ? s.slice(0, qIdx) : s;
+    const rawPathname = qIdx >= 0 ? s.slice(0, qIdx) : s;
     const queryPart = qIdx >= 0 ? s.slice(qIdx + 1) : '';
+    let pathname = rawPathname.slice(1) || rawPathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch {
+      // leave as-is on malformed encoding
+    }
     const params: Record<string, string> = {};
     let hasPhoneNumber = false;
     for (const pair of queryPart.split('&')) {
@@ -160,7 +188,7 @@ export function parseDeepLink(raw: string): DeepLinkIntent | null {
       params[k] = v;
       if (AUTH_PARAM_KEYS.includes(k)) hasPhoneNumber = true;
     }
-    return { pathname: pathname.slice(1) || pathname, params, hasPhoneNumber };
+    return { pathname, params, hasPhoneNumber };
   }
 
   return null;
@@ -175,40 +203,38 @@ export function hasAuthParam(intent: DeepLinkIntent | null): boolean {
   return intent.hasPhoneNumber;
 }
 
+function routeTierFor(routeKey: string): RouteTier | undefined {
+  if (ROUTE_TIERS[routeKey]) return ROUTE_TIERS[routeKey];
+  if (routeKey.includes('/')) return ROUTE_TIERS[routeKey.split('/')[0]];
+  return undefined;
+}
+
 /**
- * Gate a resolved app route against the SecureStore snapshot.
- *
- * Public routes (legal-acceptance, phone-entry, otp-entry) always resolve
- * freely — they are entry points and don't require an existing session.
- * Protected routes require a session; device-handoff always requires a
- * fresh OTP login (never silently opened from a QR scan).
- *
- * Fresh:  -> /legal-acceptance   (must accept terms first)
- * Legal:  -> /phone-entry        (must verify phone first)
- * Session -> open (or -> /phone-entry for device-handoff)
+ * Central gate decision for a resolved route key against the SecureStore
+ * snapshot. Returns the gate to navigate to, or null when the route is allowed:
+ *   - public tier      → allowed (null)
+ *   - legal_required   → allowed only when legalAccepted → else /legal-acceptance
+ *   - session_required → allowed only when a session exists → else
+ *                        /legal-acceptance (no legal) or /phone-entry (legal only)
+ * URL params are intentionally NOT inputs — a phone number/userId/token can
+ * never grant access to a protected route.
  */
-export function decideGateForRoute(
-  pathname: string,
-  snapshot: OnboardingSnapshot,
-): string {
-  if (pathname === '/' || pathname === 'legal-acceptance' || pathname === 'index') {
-    return '/legal-acceptance';
+export function decideGateForRoute(routeKey: string, snapshot: OnboardingSnapshot): string | null {
+  const tier = routeTierFor(routeKey);
+  if (!tier || tier === 'public') return null;
+  if (tier === 'legal_required') {
+    return snapshot.legalAccepted ? null : '/legal-acceptance';
   }
+  if (snapshot.hasSession) return null;
+  return snapshot.legalAccepted ? '/phone-entry' : '/legal-acceptance';
+}
 
-  if (!snapshot.legalAccepted) {
-    return '/legal-acceptance';
-  }
-
-  if (!snapshot.userId) {
-    if (pathname === 'otp-entry' || pathname === 'phone-entry') {
-      return pathname;
-    }
-    return '/phone-entry';
-  }
-
-  if (AUTH_PATHNAMES.has(pathname)) {
-    return '/phone-entry';
-  }
-
-  return pathname;
+/**
+ * Deep-link variant of the gate. The `phoneNumber` (or any other) URL param is
+ * intentionally NOT an input to the decision — a URL param can never grant
+ * access to a protected route. The decision depends only on the target route's
+ * tier and the locally-resolved SecureStore snapshot.
+ */
+export function decideDeepLinkGate(intent: DeepLinkIntent, snapshot: OnboardingSnapshot): string | null {
+  return decideGateForRoute(intent.pathname, snapshot);
 }

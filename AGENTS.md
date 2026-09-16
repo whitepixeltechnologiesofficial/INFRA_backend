@@ -661,3 +661,26 @@ deep link must stop at Legal Acceptance until the user explicitly clicks Accept:
 
 - Do NOT commit unless explicitly asked.
 - Repo root is a git repo; working tree currently has uncommitted mobile changes.
+
+### origin/team-alpha merge reconciliation — guard modules (VERIFIED, uncommitted)
+
+Merged origin/team-alpha (chose OURS for device-handoff/profile-setup/deep-link-guard/onboarding-guard).
+The merged app code (app/_layout.tsx, app/index.tsx, app/otp-entry.tsx, OnboardingGuardProvider.tsx,
+onb-11-verify, url-login-bypass-verify) required Team Alpha guard APIs. Reconciled WITHOUT losing the
+local URL/QR security behavior:
+
+- `lib/onboarding-guard.ts` — now exports BOTH the Team Alpha API surface (`RouteTier`, `ROUTE_TIERS`,
+  `SplashAction`, `STORE_KEYS`, `PUBLIC/LEGAL_REQUIRED/SESSION_REQUIRED_ROUTES`, `SecureStorageAdapter`,
+  `canAccess`, `decideSplashAction`, `resolveSnapshot`) AND the local `buildSnapshot` +
+  `OnboardingSnapshot` (optional `displayPhone`). Never writes auth state.
+- `lib/deep-link-guard.ts` — keeps the local stricter `parseDeepLink` (custom `wptmobile://`/`sms://`,
+  HTTPS limited to known app host `onb.test`, `exp://.../--/`, bare paths with percent-decode + root->null),
+  `hasAppRoute`, `hasAuthParam`; adds Team Alpha `normalizeRouteKey`, `decideDeepLinkGate`; the local
+  `decideGateForRoute` is replaced with the tier-based `string | null` semantics (null = allowed) the merged
+  app + url-login-bypass require. Security invariants hold: URL phoneNumber/userId/accessToken/deviceId NEVER
+  authenticate, never mark OTP verified, never create a session; fresh protected deep links -> /legal-acceptance;
+  legal-only -> /phone-entry; device-handoff/settings/(tabs)/otp-entry/scan/blocked-contacts all tier-gated.
+- Verify: `tsc --noEmit` 0 errors; expo lint clean; turbo lint 6/6 + typecheck 5/5; url-login-bypass-verify
+  78/78, qr-scan-verify 95/95, onb-11-verify 60/60, protected-route-verify 82/82, permission-tasks-verify 36/36,
+  perm-tasks-1-15-verify 198/198, onb-17-verify 36/36, onb-17-backend-mode 13/13 (508 total). Untracked
+  `docs/*.pdf` untouched.
