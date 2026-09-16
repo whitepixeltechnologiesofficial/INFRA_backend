@@ -546,6 +546,50 @@ Verification harnesses (Node, tsx, no device):
 - Two-physical-device manual verification: NOT YET (no device available);
   documented in `.env.example` with full procedure.
 
+### URL phone-number auth bypass — central deep-link guard (VERIFIED, uncommitted)
+
+Expo Go deep-link test used URLs like `/device-handoff?phoneNumber=9876543210`.
+A URL phone number is routing context ONLY — it must NEVER authenticate, never
+create a session, never mark an OTP verified, and never reach Chat List /
+Profile Setup / Device Handoff. On fresh/unauthenticated state every protected
+deep link must stop at Legal Acceptance until the user explicitly clicks Accept:
+
+- `lib/deep-link-guard.ts` — **NEW**; pure, dependency-free (Node-verifiable):
+  `parseDeepLink` (Expo Go `exp://host:port/--/{path}?q`, universal `https`,
+  bare `/path?q`; `%28tabs%29` -> `(tabs)`; root-only -> `null`),
+  `normalizeRouteKey`, `hasAuthParam`, `decideDeepLinkGate(intent, snapshot)` and
+  `decideGateForRoute(routeKey, snapshot)` reusing `ROUTE_TIERS`/`OnboardingSnapshot`
+  from `lib/onboarding-guard.ts`. Decision input is ONLY the target route tier +
+  the locally-resolved SecureStore snapshot — the phoneNumber param is never an
+  input. legal_required needs `legalAccepted`; session_required needs `hasSession`;
+  gated -> `/legal-acceptance` (or `/phone-entry` when legal already accepted).
+- `app/_layout.tsx` — **central `DeepLinkGuard` component** mounted inside
+  `SessionProvider` before `<Stack>`:
+  1) cold-start via `Linking.getInitialURL()` (expo-linking top-level fn export,
+     NOT a `Linking` object — SDK 54 API), 2) subsequent `url` events via
+   `addEventListener`, 3) belt-and-suspenders `usePathname()` gate re-evaluating
+   the resolved route on every snapshot/path change. `gates` are `router.replace(gate as Href)`
+   (typed routes require the cast). Snapshots are read through a ref so listeners
+   always see fresh state; handled hrefs deduped in a ref `Set`. The guard NEVER
+   performs `markLegalAccepted`/session writes — the ONLY way past Legal
+   Acceptance remains the user clicking Continue on `legal-acceptance.tsx`.
+- Root `Stack.Protected` guards (ONB-1.1) still exist as a second layer: guarded
+  screens are removed from the navigator entirely, so a blocked deep link cannot
+  render a protected screen even before the guard effect runs.
+- `scripts/url-login-bypass-verify.ts` — **NEW**; Node harness 78/78 PASS:
+  parsing shapes, fabricated numbers (1111111111/9999999999/1234567890/random/
+  encoded +91) against device-handoff/profile-setup/otp-entry/phone-entry/(tabs)/
+  settings/scan/blocked-contacts -> always `/legal-acceptance` on fresh state,
+  `hasSession=false` + zero mock OTP sessions still guaranteed, legal-only ->
+  `/phone-entry`, full session -> allowed, `decideGateForRoute` pathname matrix,
+  no-auth invariants. Run: `node --import tsx scripts/url-login-bypass-verify.ts`.
+- Regressions re-run green: onb-11 60/60, onb-17 36/36, onb-17-backend-mode
+  13/13, permission-tasks 36/36, push-provider 7/7. `tsc --noEmit` clean,
+  `expo lint` clean, turbo lint 6/6 + typecheck 5/5. Device VERIFY manual:
+  Expo Go -> adb `am start -a android.intent.action.VIEW -d "exp://<host>:8081/--/device-handoff?phoneNumber=9876543210"` on a fresh app -> must land on
+  Legal Acceptance (NOT Device Handoff / Chat List); after accepting legal the
+  same link -> Phone Entry; after full OTP login -> Device Handoff/Chats.
+
 ## Conventions
 
 - Do not add code comments unless asked.
