@@ -279,13 +279,15 @@ The five-permission startup wizard / fixed PERM-2.2 sequence was replaced with a
 **contextual** permission model. Each permission is requested independently, at the
 moment its feature is used. Core messaging NEVER depends on any permission.
 
-**Flow:**
+**Flow (permission order Contacts -> Notifications -> Microphone -> Camera -> Photos):**
 ```
-profile-setup -> /notifications-info (Notifications only) -> /permission-info (Contacts only) -> (tabs) Chat List
+profile-setup -> /permission-intro -> /permission-info (Contacts only) -> /notifications-info (Notifications only) -> (tabs) Chat List
    -> Voice note press -> Microphone (on demand)
    -> Camera (attach -> Camera) (on demand)
    -> Gallery (attach -> Photos/Files) (on demand)
 ```
+NOTE: the onboarding order was corrected on 2026-09-16 — Contacts now precedes
+Notifications (was Notifications first). See "Permission order fix" below.
 
 - **`lib/permissions.ts`** — REWRITTEN. Exposes independent helpers, one per
   permission, each idempotent and non-gatekeeping:
@@ -302,17 +304,18 @@ profile-setup -> /notifications-info (Notifications only) -> /permission-info (C
 - **`phone-entry.tsx`** — NO permission requests at all anymore. Continue only fires
   `acceptLegal` + `sendOtp` (fire-and-forget) and navigates to OTP. (Fixed the
   earlier regression that fired ALL permission dialogs from phone-entry.)
-- **`app/notifications-info.tsx`** — **NEW** NOTIFICATIONS-ONLY explainer shown right
-  after profile setup: "Allow notifications to stay updated about new messages and
-  calls." Checks state first (never re-requests an already-decided permission), then
-  requests ONLY Notifications (which auto-registers the push token on grant); denial is
-  never fatal. Routes to `/permission-info`.
-- **`app/permission-info.tsx`** — REWRITTEN as the CONTACTS-ONLY explainer shown
-  right after Notifications. Purpose: "Find people you know". Has Allow Contacts
+- **`app/permission-info.tsx`** — CONTACTS-ONLY explainer shown right after the
+  permission intro. Purpose: "Find people you know". Has Allow Contacts
   + Skip for now. Checks state first (never re-requests decided permissions).
   Requests ONLY Contacts; on grant auto-syncs; other permissions are NOT requested here.
-- **`app/profile-setup.tsx`** — after `createProfile`, routes to `/notifications-info`
-  (Notifications) with phoneNumber/displayPhone params instead of `(tabs)`.
+  Routes to `/notifications-info`.
+- **`app/notifications-info.tsx`** — NOTIFICATIONS-ONLY explainer shown right
+  after Contacts: "Allow notifications to stay updated about new messages and
+  calls." Checks state first (never re-requests an already-decided permission), then
+  requests ONLY Notifications (which auto-registers the push token on grant); denial is
+  never fatal. Routes to `/(tabs)`.
+- **`app/profile-setup.tsx`** — after `createProfile`, routes to `/permission-intro`
+  with phoneNumber/displayPhone params.
 - **`app/(tabs)/index.tsx`** — Chat List no longer shows a contextual Notifications
   prompt (Notifications handling moved to `/notifications-info` before entry). The
   chat thread input's attach button (`add-circle-outline`) now opens a contextual
@@ -332,6 +335,63 @@ All TS errors are fixed: the previously pre-existing `explore.tsx` (ParallaxScro
 `otp-entry.tsx`, `phone-entry.tsx` (LinearGradient shim) errors are gone, and
 `scripts/gen-notification-icon.js` lint errors were fixed too. Verifies:
 `tsc --noEmit` + `expo lint` clean across the whole mobile app (no remaining warnings).
+
+### Permission order fix + Tasks 1-15 audit (VERIFIED, uncommitted)
+
+Team-Alpha audit of Mobile Permission Tasks 1–15 found one real defect: the
+onboarding flow showed **Notifications before Contacts**, violating the required
+order (Contacts -> Notifications -> Microphone -> Camera -> Photos).
+
+- Fixed navigation targets: `permission-intro.tsx` -> `/permission-info` (was
+  `/notifications-info`); `permission-info.tsx` -> `/notifications-info` (was
+  `/(tabs)`); `notifications-info.tsx` -> `/(tabs)` (was `/permission-info`).
+  Onboarding flow is now `profile-setup -> permission-intro -> permission-info
+  (Contacts) -> notifications-info (Notifications) -> (tabs)`. Comments in all three
+  screens updated to match.
+- `app/(tabs)/index.tsx` — after a successful in-app request, the gate is updated
+  immediately (`if (res.granted) setCameraGate('granted')` /
+  `setPhotosGate('granted')`) so the next tap opens the feature without re-asking.
+- Microphone (3rd) and Camera/Photos (4th/5th) remain on-demand in the chat, so the
+  declared order is honored end-to-end. No auth/OTP/deep-link/session code changed.
+- **`scripts/perm-tasks-1-15-verify.ts`** — **NEW** harness, **198/198 PASS**. Covers
+  T1–T15 (all five permissions explain/request/grant/deny, order, independence,
+  grant/denial paths, Settings re-grant, profile-photo Camera-vs-Photos isolation,
+  banner behavior, AppState foreground re-detection, "no permission writes auth
+  state", all-five-denied end-to-end) plus regression guards for legal acceptance,
+  OTP lockout, deep-link/QR (userId from SecureStore only), device-handoff, and
+  SecureStore keys not overwritten by permission code. Existing
+  `scripts/permission-tasks-verify.ts` (36/36) and `scripts/onb-17-verify.ts` (36/36)
+  still pass. `expo lint` clean.
+
+### Hardening pass — QR/deep-link TypeScript errors fixed (VERIFIED, uncommitted)
+
+Final hardening closed the last 3 `tsc --noEmit` errors and stood up the QR/deep-link
+regression harness:
+
+- **`lib/onboarding-guard.ts`** — **NEW** (was missing; `qr-link.ts` imported it but
+  the module never existed). Defines `OnboardingSnapshot` and `buildSnapshot()` — a
+  pure SecureStore reader (never writes) that captures `legalAccepted` /
+  `userId` / `deviceId` / `hasSession` at decision time.
+- **`lib/deep-link-guard.ts`** — **NEW** (was missing; imported by both `qr-link.ts`
+  and `scripts/qr-scan-verify.ts`). `parseDeepLink()` (custom scheme `wptmobile://`,
+  `exp://` with `--/` marker, HTTPS universal links restricted to known app host
+  `onb.test`, bare paths; root/public non-app hosts → null), `hasAppRoute()`,
+  `hasAuthParam()` (never `true` for a phone-only query unless an auth key is
+  present), `decideGateForRoute()` — the SAME gating the root DeepLinkGuard uses:
+  fresh → `/legal-acceptance`, legal-only → `/phone-entry`, authenticated → open
+  (except `device-handoff` → always `/phone-entry`; `/` → legal).
+  **QR/identity semantics preserved:** a scanned phone number never authenticates,
+  never creates a session, never marks OTP verified. Pure + dependency-free.
+- **`scripts/qr-scan-verify.ts`** was previously failing to even import (missing
+  module); now executes: **95/95 PASS** — custom-scheme parsing, phone-in-query /
+  phone-in-path never authenticating (T1–T4), authenticated deep links unchanged
+  (T5), LAN/localhost browser provenance vs public-host block (T6), zero auth-state
+  mutation from any QR decision (T7), legitimate manual login preserved (T8), and
+  the full trusted-origin allowlist matrix (B).
+- Result: `pnpm --filter sealine-mobile exec tsc --noEmit` → **0 errors** (was 3).
+  `expo lint` clean. All harnesses PASS: `permission-tasks-verify` 36/36,
+  `onb-17-verify` 36/36, `onb-17-backend-mode` 13/13, `perm-tasks-1-15-verify` 198/198,
+  `qr-scan-verify` 95/95. Repo-level `pnpm lint` / `pnpm typecheck` → exit 0.
 
 ### Legal acceptance gate — durable + enforced (ONB-1.3-V, VERIFIED, uncommitted)
 

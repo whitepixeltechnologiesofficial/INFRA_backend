@@ -1,5 +1,5 @@
 // app/profile-setup.tsx
-import { router, useLocalSearchParams } from 'expo-router';
+import { router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AppState,
@@ -21,6 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { onboardingApi } from '@/api/onboardingApi';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 import {
   requestCameraPermission,
   requestPhotosPermission,
@@ -45,7 +46,13 @@ const COLORS = {
 const DEFAULT_ABOUT = "Hey there! I'm using ONB";
 
 export default function ProfileSetupScreen() {
-  const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();
+  // ROUTE-GATE — profile-setup is authenticated-only (post-OTP). A direct URL
+  // like /profile-setup?phoneNumber=9876543210 is blocked BEFORE anything
+  // renders; on allow the VERIFIED identity from SecureStore is used instead of
+  // untrusted URL params.
+  const snapshot = useRouteGuard('profile-setup');
+  // Identity comes from the OTP-verified session snapshot, not URL params.
+  const displayPhone = snapshot?.displayPhone ?? '';
   const [name, setName] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
   const [about, setAbout] = useState(DEFAULT_ABOUT);
@@ -173,10 +180,14 @@ export default function ProfileSetupScreen() {
         about: about.trim() || DEFAULT_ABOUT,
       });
       // After profile creation, explain the optional permissions (Notifications
-      // and Contacts) before entering the Chat List.
+      // and Contacts) before entering the Chat List. Forward ONLY the verified
+      // display phone from the session snapshot — never raw URL params.
       router.replace({
         pathname: '/permission-intro',
-        params: { phoneNumber: params.phoneNumber, displayPhone: params.displayPhone },
+        params: {
+          phoneNumber: displayPhone,
+          displayPhone,
+        },
       });
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to set up profile.');
@@ -185,7 +196,10 @@ export default function ProfileSetupScreen() {
     }
   };
 
-  const displayPhone = params.displayPhone || params.phoneNumber || '';
+  // ROUTE-GATE result: render nothing until the centralized guard allows the
+  // route. While pending or blocked, the screen never paints untrusted URL
+  // content (and the hook redirects to legal/phone-entry when blocked).
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>

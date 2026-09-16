@@ -1,13 +1,14 @@
 // app/notifications-info.tsx
 //
-// NOTIFICATIONS PERMISSION — Shown after profile setup, before the Contacts
-// screen and before entering the Chat List. Explains why notification access is
-// useful, then triggers the native Notifications permission dialog. Only
-// Notifications is requested here — Contacts follows on the next screen, and
-// Microphone / Camera / Photos are each requested contextually later.
+// NOTIFICATIONS PERMISSION — Shown after the Contacts screen, before entering
+// the Chat List. Explains why notification access is useful, then triggers the
+// native Notifications permission dialog. Only Notifications is requested
+// here — Contacts was requested on the previous screen, and Microphone /
+// Camera / Photos are each requested contextually later.
 //
 // On grant: push registration happens automatically and the user proceeds.
-// On deny: the user proceeds to Contacts — core messaging is never blocked.
+// On deny: the user proceeds to the Chat List — core messaging is never
+// blocked.
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -21,6 +22,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { requestNotificationsPermission, checkNotificationsState } from '@/lib/permissions';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 
 const COLORS = {
   bg: '#0B0F14',
@@ -39,6 +41,9 @@ export default function NotificationsInfoScreen() {
   }>();
   const [isRequesting, setIsRequesting] = useState(false);
 
+  // ROUTE-GATE — authenticated-only screen (post-profile-setup).
+  const snapshot = useRouteGuard('notifications-info');
+
   const handleContinue = useCallback(async () => {
     if (isRequesting) return;
     setIsRequesting(true);
@@ -54,11 +59,13 @@ export default function NotificationsInfoScreen() {
       // Notifications permission failure is non-fatal — proceed regardless.
     } finally {
       router.replace({
-        pathname: '/permission-info',
+        pathname: '/(tabs)',
         params: { phoneNumber, displayPhone },
       });
     }
   }, [isRequesting, phoneNumber, displayPhone]);
+
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.root}>

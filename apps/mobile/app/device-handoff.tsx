@@ -9,6 +9,12 @@
 // only presents the confirmation and continues into the app. The `fromOtp=1`
 // param distinguishes that path from a standalone handoff (e.g. a refresh-token
 // device add), where `createSession` performs the session takeover.
+//
+// SECURITY: this screen is authenticated-only. It uses the centralized route
+// guard (fresh/unauthenticated -> /legal-acceptance or /phone-entry, redirect
+// discards query params), and ALL identity comes from the OTP-verified session
+// snapshot — never from URL params. Nothing identity-bearing is written to
+// SecureStore from this screen (displayPhone is persisted by otp-entry).
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -21,72 +27,45 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSession } from '@/hooks/useSession';
-import { requireLegalAccepted } from '@/lib/legal-acceptance';
-import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
-import * as SecureStore from 'expo-secure-store';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 
 export default function DeviceHandoffScreen() {
-  const params = useLocalSearchParams<{
-    phoneNumber?: string;
-    displayPhone?: string;
-    userId: string;
-    fromOtp?: string;
-  }>();
-  const phoneNumber = params.phoneNumber || '';
-  const displayPhone = params.displayPhone || '';
-  const userId = params.userId || '';
-  const fromOtp = params.fromOtp === '1';
+  const { fromOtp } = useLocalSearchParams<{ fromOtp?: string }>();
+  const fromOtpFlag = fromOtp === '1';
+  // ROUTE-GATE — authenticated-only screen. Blocks direct deep-links before
+  // anything renders and supplies the VERIFIED session identity.
+  const snapshot = useRouteGuard('device-handoff');
   const [isLoading, setIsLoading] = useState(true);
   const { createSession } = useSession();
   const createSessionRef = useRef(createSession);
   createSessionRef.current = createSession;
 
   useEffect(() => {
-    const performHandoff = async () => {
+    // Wait for the guard to resolve — never run handoff logic against params.
+    if (!snapshot) return;
+    (async () => {
       try {
-        // LEGAL-GATE — protected screen: refuse to create a session unless the
-        // terms were accepted first (blocks direct deep-links).
-        const legalAccepted = await requireLegalAccepted();
-        if (!legalAccepted) {
-          router.replace('/legal-acceptance');
-          return;
-        }
-
-        if (!fromOtp) {
+        if (!fromOtpFlag) {
           // Standalone / refresh-token handoff: the session is created HERE via
-          // the handoff endpoint. (The OTP path skips this — OTP verify already
+          // the handoff endpoint using the VERIFIED userId (from SecureStore,
+          // not URL params). (The OTP path skips this — OTP verify already
           // established the session and wrote the identifiers to SecureStore.)
-          await createSessionRef.current(userId);
-        } else {
-          // OTP path: the identifiers were persisted by otp-entry. Make sure
-          // the session the backend knows about matches what is stored — the
-          // stable deviceId is preserved, so a re-verify would revoke this
-          // session's predecessor, not orphan it.
-          const storedUserId = await SecureStore.getItemAsync('userId');
-          if (!storedUserId) {
-            router.replace('/phone-entry');
-            return;
+          if (snapshot.userId) {
+            await createSessionRef.current(snapshot.userId);
           }
-        }
-
-        // Store the formatted phone number for display in Settings/Chats
-        const raw = phoneNumber || displayPhone;
-        if (raw) {
-          const parsed = parsePhoneNumberFromString(raw);
-          const formatted = parsed ? parsed.formatInternational() : raw;
-          await SecureStore.setItemAsync('displayPhone', formatted);
         }
         setIsLoading(false);
       } catch {
         setIsLoading(false);
       }
-    };
-    performHandoff();
-  }, [userId, phoneNumber, displayPhone, fromOtp]);
+    })();
+  }, [fromOtpFlag, snapshot]);
 
   const handleContinue = () => {
     router.replace('/(tabs)');
   };
+
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.container}>

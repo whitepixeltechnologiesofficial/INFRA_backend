@@ -16,6 +16,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeContext } from '@/providers/ThemeProvider';
 import { useSessionContext } from '@/providers/SessionProvider';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 import type { ThemeMode, ThemeColors } from '@/lib/theme';
 
 const FONTS = {
@@ -129,6 +130,9 @@ function ThemePicker({
 }
 
 export default function SettingsScreen() {
+  // ROUTE-GATE — settings is authenticated-only; never renderable from a fresh
+  // direct URL with identity-bearing query params.
+  const snapshot = useRouteGuard('settings');
   const { colors, themeMode, setThemeMode } = useThemeContext();
   const { displayPhone, logout } = useSessionContext();
   const [readReceipts, setReadReceipts] = useState(true);
@@ -136,6 +140,9 @@ export default function SettingsScreen() {
   const [notifications, setNotifications] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [enterToSend, setEnterToSend] = useState(false);
+
+  // Render nothing until the centralized guard allows the route.
+  if (!snapshot) return null;
 
   const handleLogout = () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [

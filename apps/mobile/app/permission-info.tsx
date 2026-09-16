@@ -1,14 +1,15 @@
 // app/permission-info.tsx
 //
-// CONTACTS PERMISSION — Shown after profile setup, before entering the Chat
-// List. Explains why Contacts access is useful, then triggers the native
-// Contacts permission dialog. Only Contacts is requested here — Notifications,
+// CONTACTS PERMISSION — Shown after profile setup and the permission intro,
+// before the Notifications screen and the Chat List. Explains why Contacts
+// access is useful, then triggers the native Contacts permission dialog. Only
+// Contacts is requested here — Notifications follows on the next screen, and
 // Microphone, Camera, and Photos/Files are each requested contextually later
 // when their respective features are used.
 //
 // On grant: contact synchronization begins automatically (PERM-3).
-// On deny: the user proceeds to the Chat List; manual chat-by-number still works.
-// Never blocks core messaging regardless of outcome.
+// On deny: the user proceeds to Notifications; manual chat-by-number still
+// works in the Chat List. Never blocks core messaging regardless of outcome.
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -23,6 +24,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { requestContactsPermission, checkContactsState } from '@/lib/permissions';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 
 const COLORS = {
   bg: '#0B0F14',
@@ -40,6 +42,9 @@ export default function PermissionsInfoScreen() {
     displayPhone?: string;
   }>();
   const [isRequesting, setIsRequesting] = useState(false);
+
+  // ROUTE-GATE — authenticated-only screen (post-profile-setup).
+  const snapshot = useRouteGuard('permission-info');
 
   const handleContinue = useCallback(async () => {
     if (isRequesting) return;
@@ -72,11 +77,13 @@ export default function PermissionsInfoScreen() {
       );
     } finally {
       router.replace({
-        pathname: '/(tabs)',
+        pathname: '/notifications-info',
         params: { phoneNumber, displayPhone },
       });
     }
   }, [isRequesting, phoneNumber, displayPhone]);
+
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.root}>

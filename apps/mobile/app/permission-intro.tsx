@@ -1,19 +1,20 @@
 // app/permission-intro.tsx
 //
-// PERMISSION INTRO — Shown right after profile setup, before the Notifications
-// and Contacts explainer screens. A short, informational overview of the five
-// permissions the app may ask for and what each one is used for, so the user
-// is not surprised by a sequence of native dialogs.
+// PERMISSION INTRO — Shown right after profile setup, before the Contacts
+// and Notifications explainer screens. A short, informational overview of the
+// five permissions the app may ask for and what each one is used for, so the
+// user is not surprised by a sequence of native dialogs.
 //
 // This screen requests NOTHING — it is info-only and continue-only: no
 // toggles, no checkboxes, no skip, no permanent dismissal. Continuing simply
-// moves to the Notifications explainer (/notifications-info), which then
-// requests only Notifications.
+// moves to the Contacts explainer (/permission-info), which then requests only
+// Contacts. Notifications follows after that.
 import React, { useCallback } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 
 const COLORS = {
   bg: '#0B0F14',
@@ -69,12 +70,17 @@ export default function PermissionIntroScreen() {
     displayPhone?: string;
   }>();
 
+  // ROUTE-GATE — authenticated-only screen (post-profile-setup).
+  const snapshot = useRouteGuard('permission-intro');
+
   const handleContinue = useCallback(() => {
     router.replace({
-      pathname: '/notifications-info',
+      pathname: '/permission-info',
       params: { phoneNumber, displayPhone },
     });
   }, [phoneNumber, displayPhone]);
+
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.root}>

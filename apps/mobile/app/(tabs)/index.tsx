@@ -845,6 +845,7 @@ function ChatView({
       let action = decideAttachAction(cameraGate);
       if (action === 'ask') {
         const res = await requestCameraPermission();
+        if (res.granted) setCameraGate('granted');
         action = decideAttachAction(cameraGate, res);
       }
       if (action !== 'open') {
@@ -885,6 +886,7 @@ function ChatView({
       let action = decideAttachAction(photosGate);
       if (action === 'ask') {
         const res = await requestPhotosPermission();
+        if (res.granted) setPhotosGate('granted');
         action = decideAttachAction(photosGate, res);
       }
       if (action !== 'open') {

@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
-import { requireLegalAccepted } from '@/lib/legal-acceptance';
+import { useRouteGuard } from '@/hooks/useRouteGuard';
 import { getOrCreateDeviceId } from '@/lib/device-identity';
 import { resolvePostLoginRoute } from '@/lib/session-policy';
 //import * as Device from 'expo-device'; // optional, fallback provided
@@ -74,20 +74,10 @@ export default function OtpEntryScreen() {
   const OTP = otp.join('');
   const expired = expirySeconds <= 0;
 
-  // LEGAL-GATE — otp-entry is protected: without prior terms acceptance
-  // (durable flag) a direct deep-link bounces back to legal-acceptance.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const legalAccepted = await requireLegalAccepted();
-      if (!cancelled && !legalAccepted) {
-        router.replace('/legal-acceptance');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // ROUTE-GATE — otp-entry is legal-gated (not session-gated): it is the step
+  // that ESTABLISHES the session. Without the durable legal flag a direct
+  // deep-link is bounced to legal-acceptance; query params are discarded.
+  const snapshot = useRouteGuard('otp-entry');
 
   // Dev convenience: auto-fill with the mock OTP and auto-verify after a brief
   // delay so the dev sees the screen before it verifies and moves on. Only runs
@@ -337,6 +327,8 @@ export default function OtpEntryScreen() {
     const parsed = parsePhoneNumberFromString(phoneNumber);
     return parsed ? parsed.formatInternational() : phoneNumber;
   }, [phoneNumber, displayPhone]);
+
+  if (!snapshot) return null;
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
