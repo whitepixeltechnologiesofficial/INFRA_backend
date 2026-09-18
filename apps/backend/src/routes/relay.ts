@@ -55,7 +55,6 @@ function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
 router.post("/send", async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
-    const authDeviceId = res.locals.auth!.deviceId;
 
     const {
       recipientUserId,
@@ -93,6 +92,21 @@ router.post("/send", async (req: Request, res: Response) => {
     const ciphertextBytes = Buffer.from(ciphertext, "hex");
     const sizeBytes = ciphertextBytes.length;
 
+    // The sender must be a registered device: sender_device_id is a
+    // uuid FK to devices.id, so the JWT's string deviceId cannot be
+    // used here. Resolve the authenticated user's active device.
+    const sender = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.userId, authUserId), eq(devices.isActive, true)))
+      .limit(1);
+
+    if (sender.length === 0) {
+      res.status(404).json({ error: "Sender has no registered device" });
+      return;
+    }
+    const senderDeviceId = sender[0]!.id;
+
     // If recipientUserId is given, fan out one row per device.
     if (recipientUserId) {
       const devList = await db
@@ -109,7 +123,7 @@ router.post("/send", async (req: Request, res: Response) => {
         .insert(messageRelay)
         .values(
           devList.map((d) => ({
-            senderDeviceId: authDeviceId,
+            senderDeviceId,
             recipientDeviceId: d.id,
             recipientUserId,
             ciphertext: ciphertextBytes,
@@ -135,7 +149,7 @@ router.post("/send", async (req: Request, res: Response) => {
     const [row] = await db
       .insert(messageRelay)
       .values({
-        senderDeviceId: authDeviceId,
+        senderDeviceId,
         recipientDeviceId,
         recipientUserId: null,
         recipientGroupId: recipientGroupId ?? null,

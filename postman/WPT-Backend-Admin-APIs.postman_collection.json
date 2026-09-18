@@ -1,0 +1,251 @@
+{
+  "info": {
+    "name": "WPT Backend - Admin Dashboard & Moderation APIs",
+    "description": "Complete catalog of admin authentication and moderation REST API endpoints supported by @wpt/backend. Includes dashboard admin login, profile, and moderation actions (warn / restrict / ban / dismiss).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "item": [
+    {
+      "name": "Admin Authentication",
+      "item": [
+        {
+          "name": "Dashboard Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testadmin@wpt.dev\",\n  \"password\": \"TestAdmin@123\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/admin/login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "admin", "login"]
+            },
+            "description": "Authenticates a dashboard administrator using email and password against dashboard_admins table (bcrypt12 hash verify). Issues an admin JWT (HS256, 8h, aud: dashboard) used for all /moderation/* and /admin/me calls."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Admin Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/admin/me",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "admin", "me"]
+            },
+            "description": "Returns details of the authenticated dashboard admin (adminId, email, role). Verifies the bearer admin token; 401 MISSING_ADMIN_TOKEN / INVALID_ADMIN_TOKEN, 404 ADMIN_NOT_FOUND."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Moderation Actions",
+      "item": [
+        {
+          "name": "Warn Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/warn",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "warn"]
+            },
+            "description": "Issues a warning on a report. Calls transaction-safe public.moderate_report() which updates the report AND writes an audit_log row in the same transaction."
+          },
+          "response": []
+        },
+        {
+          "name": "Restrict Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/restrict",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "restrict"]
+            },
+            "description": "Restricts the reported user. Same transaction-safe moderate_report() behavior as warn, action = restrict."
+          },
+          "response": []
+        },
+        {
+          "name": "Ban Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/ban",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "ban"]
+            },
+            "description": "Bans the reported user. Same transaction-safe moderate_report() behavior as warn, action = ban."
+          },
+          "response": []
+        },
+        {
+          "name": "Dismiss Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/dismiss",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "dismiss"]
+            },
+            "description": "Dismisses (rejects) a report. Same transaction-safe moderate_report() behavior as warn, action = dismiss."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Debug & Diagnostics",
+      "item": [
+        {
+          "name": "View DB Tables (HTML Dev Viewer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/debug/tables",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "debug", "tables"]
+            },
+            "description": "Developer HTML viewer displaying current database state (users, sessions, OTP hashes, legal acceptances, outbox). Gated by DEBUG=1, non-production, and localhost IP."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Debug Admin Token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/debug/admin-token",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "debug", "admin-token"]
+            },
+            "description": "Returns {\"adminId\",\"token\"} for the first dashboard admin. Used to bootstrap admin testing without the login flow. Gated by DEBUG=1, non-production, and localhost IP."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "dashboard_access_token",
+      "value": "<DASHBOARD_ACCESS_TOKEN>",
+      "type": "string"
+    },
+    {
+      "key": "report_id",
+      "value": "<REPORT_ID>",
+      "type": "string"
+    },
+    {
+      "key": "admin_id",
+      "value": "<ADMIN_ID>",
+      "type": "string"
+    },
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000/api/v1",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{dashboard_access_token}}",
+        "type": "string"
+      }
+    ]
+  }
+}

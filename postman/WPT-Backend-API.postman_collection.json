@@ -1,0 +1,662 @@
+{
+  "info": {
+    "_postman_id": "wpt-backend-4f7c-4b5e-8a3b-20260914100000",
+    "name": "WPT Backend API",
+    "description": "All endpoints for the WPT/ONB backend. Base path is /api/v1 (mounted in app.ts).\n\n## Setup\n1. Edit the Collection variables:\n   - `base_url` -> backend host, e.g. `http://localhost:4000/api/v1` (or `http://10.108.18.22:4000/api/v1` when testing from a phone)\n   - `phone` -> a valid E.164 test number (libphonenumber-js rejects 555-exchange numbers; use e.g. `+12125551171`)\n   - `other_phone` -> a second valid number, e.g. `+12125561172`\n   - `otp_code` -> 6-digit code shown in the backend console as `[SMS-DEV] OTP for <phone>: <code>` (no real SMS provider configured)\n   - `jwt_secret` -> value of JWT_SECRET from apps/backend/.env (needed to mint the admin token)\n   - `admin_id` -> an existing uuid from dashboard_admins (owner: `c107d002-0cee-4317-baf3-0d3b3fa63c67`)\n\n## Flow\nRun in order: Health -> Onboarding (send OTP, accept legal, verify) which stashes access/refresh tokens -> Profile -> Blocks -> Reports -> Relay -> Moderation -> Debug.\n\nNotes:\n- `/otp/verify` must come AFTER `/accept-legal` (returns 403 LEGAL_ACCEPTANCE_REQUIRED otherwise).\n- Wrong OTP codes count toward a 3-attempt lockout; verify-before-legal does not consume attempts.\n- Authenticated requests set `Authorization: Bearer {{access_token}}` via a collection pre-request script. Optionally add `deviceId` from the verify response where an endpoint needs it.\n- Debug routes are triple-gated (DEBUG=1 + NODE_ENV!=production + localhost) and 404 unless enabled.\n- SMS_TWILIO_* envs are empty, so the OTP code only prints to the backend console.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:4000/api/v1" },
+    { "key": "phone", "value": "+12125551171" },
+    { "key": "other_phone", "value": "+12125561172" },
+    { "key": "otp_code", "value": "123456" },
+    { "key": "access_token", "value": "" },
+    { "key": "refresh_token", "value": "" },
+    { "key": "user_id", "value": "" },
+    { "key": "session_id", "value": "" },
+    { "key": "device_id", "value": "device_postman_test" },
+    { "key": "jwt_secret", "value": "" },
+    { "key": "admin_id", "value": "c107d002-0cee-4317-baf3-0d3b3fa63c67" },
+    { "key": "report_id", "value": "" },
+    { "key": "relay_id", "value": "" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Attach the access token to every authenticated request unless the",
+          "// request already provides a token in body/pre-request.",
+          "const base = pm.collectionVariables.get('base_url') || '';",
+          "const token = pm.collectionVariables.get('access_token');",
+          "const url = pm.request.url.toString();",
+          "if (token && /\\/profile\\/|\\/blocks\\/|\\/reports\\/|\\/relay\\/|\\/session\\/check/.test(url)) {",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + token });",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level helper: pm.expectStatus(pm) can be used per-request."
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] },
+            "description": "Liveness check. Returns {\"ok\":true}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('health ok', () => pm.response.to.have.status(200));",
+                  "pm.test('body.ok is true', () => pm.expect(pm.response.json().ok).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Onboarding",
+      "item": [
+        {
+          "name": "POST /onboarding/check-existing-user",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"phoneNumber\": \"{{phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/check-existing-user", "host": ["{{base_url}}"], "path": ["onboarding", "check-existing-user"] },
+            "description": "Returns {\"exists\": boolean} only (no userId leak). 400 INVALID_PHONE for malformed E.164."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has exists flag', () => pm.expect(pm.response.json()).to.have.property('exists'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/otp/send",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"phoneNumber\": \"{{phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/otp/send", "host": ["{{base_url}}"], "path": ["onboarding", "otp", "send"] },
+            "description": "Sends an OTP (prints code to server console, no real SMS). Rate limited to 3 per 60s per phone:\n- 200 {\"success\":true}\n- 429 {\"error\":\"RESEND_COOLDOWN_ACTIVE\",\"secondsRemaining\":\"N\"}\n- 400 INVALID_PHONE"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('success sent', () => pm.expect(pm.response.json().success).to.eql(true));",
+                  "console.log('Read the 6-digit code from the backend console ([SMS-DEV] OTP for ' + pm.collectionVariables.get('phone') + ') and set collection variable otp_code.');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/accept-legal",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"phoneNumber\": \"{{phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/accept-legal", "host": ["{{base_url}}"], "path": ["onboarding", "accept-legal"] },
+            "description": "MUST run before /otp/verify. Returns {\"success\":true}. Stores legal acceptance for the phone."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('legal accepted', () => pm.expect(pm.response.json().success).to.eql(true));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/otp/verify",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"phoneNumber\": \"{{phone}}\",\n    \"code\": \"{{otp_code}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/otp/verify", "host": ["{{base_url}}"], "path": ["onboarding", "otp", "verify"] },
+            "description": "Verifies OTP. On success returns {\"status\":\"success\",\"routing\":\"profile_setup\"|\"chats\",\"accessToken\",\"refreshToken\",\"userId\",\"sessionId\"}.\n\nNon-fatal states (HTTP 200): wrong_code + attemptsRemaining, expired, locked_out, attempts_exhausted.\nErrors: 403 LEGAL_ACCEPTANCE_REQUIRED (if accept-legal not run), 400 INVALID_CODE_FORMAT / NO_ACTIVE_SESSION / INVALID_PHONE.\n\nThis request stashes accessToken, refreshToken, userId, sessionId into collection variables."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "if (j.status === 'success') {",
+                  "  pm.collectionVariables.set('access_token', j.accessToken);",
+                  "  pm.collectionVariables.set('refresh_token', j.refreshToken);",
+                  "  pm.collectionVariables.set('user_id', j.userId);",
+                  "  pm.collectionVariables.set('session_id', j.sessionId);",
+                  "  pm.test('got tokens', () => {",
+                  "    pm.expect(j.accessToken).to.be.a('string').and.not.empty;",
+                  "    pm.expect(j.refreshToken).to.be.a('string').and.not.empty;",
+                  "    pm.expect(j.routing).to.be.oneOf(['chats','profile_setup']);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('non-success state: ' + j.status, () => {",
+                  "    if (j.status === 'wrong_code') pm.expect(j.attemptsRemaining).to.be.a('number');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/session/check",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"deviceId\": \"{{device_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/session/check", "host": ["{{base_url}}"], "path": ["onboarding", "session", "check"] },
+            "description": "Auth required (Bearer). Returns {\"isValid\":true} or {\"isValid\":false,\"message\":\"...\"}. 400 if deviceId missing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('session check responds', () => pm.expect(pm.response.json()).to.have.property('isValid'));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/refresh",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"refreshToken\": \"{{refresh_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/refresh", "host": ["{{base_url}}"], "path": ["onboarding", "refresh"] },
+            "description": "Rotates access token. Returns {\"accessToken\": string}. Stashes new token.\n401 INVALID_REFRESH_TOKEN if revoked/expired."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) { pm.collectionVariables.set('access_token', j.accessToken); }",
+                  "pm.test('access refresh', () => pm.expect(j).to.have.property('accessToken'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /onboarding/login/handoff",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"refreshToken\": \"{{refresh_token}}\",\n    \"deviceInfo\": {\n        \"deviceId\": \"{{device_id}}\",\n        \"deviceName\": \"Postman\",\n        \"platform\": \"web\"\n    }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/onboarding/login/handoff", "host": ["{{base_url}}"], "path": ["onboarding", "login", "handoff"] },
+            "description": "Multi-device handoff. Returns {\"success\":true,\"sessionId\",\"accessToken\",\"refreshToken\",\"message\",\"previousDevicesLoggedOut\":N}.\nStashes the new access/refresh tokens."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.accessToken) pm.collectionVariables.set('access_token', j.accessToken);",
+                  "if (j.refreshToken) pm.collectionVariables.set('refresh_token', j.refreshToken);",
+                  "if (j.sessionId) pm.collectionVariables.set('session_id', j.sessionId);",
+                  "pm.test('handoff success', () => {",
+                  "  pm.expect(j.success).to.eql(true);",
+                  "  pm.expect(j).to.have.property('accessToken');",
+                  "  pm.expect(j).to.have.property('refreshToken');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Profile",
+      "item": [
+        {
+          "name": "POST /profile/create",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Smoke Tester\",\n    \"about\": \"Hello from Postman\",\n    \"photo\": null\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/profile/create", "host": ["{{base_url}}"], "path": ["profile", "create"] },
+            "description": "Auth required. Creates profile for the JWT sub user.\n- 200 {\"success\":true,\"userId\",\"profile\":{...}}\n- 400 {\"error\":\"name is required\"} / {\"error\":\"name cannot be empty\"}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('profile created', () => pm.expect(pm.response.json().success).to.eql(true));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /profile/get",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/profile/get", "host": ["{{base_url}}"], "path": ["profile", "get"] },
+            "description": "Auth required, no body. Returns {\"id\",\"name\",\"photo?\",\"about\",\"phoneNumber\",\"createdAt\",\"updatedAt\"}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('profile fetched', () => pm.expect(j).to.have.property('name'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /profile/update",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Smoke Updated\",\n    \"about\": \"updated via Postman\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/profile/update", "host": ["{{base_url}}"], "path": ["profile", "update"] },
+            "description": "Auth required. Partial update of name/photo/about. Returns {\"success\":true,\"profile\":{...}}."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Blocks",
+      "item": [
+        {
+          "name": "POST /blocks/block",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"blockedPhone\": \"{{other_phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/blocks/block", "host": ["{{base_url}}"], "path": ["blocks", "block"] },
+            "description": "Auth required. Returns {\"success\":true,\"blockedPhoneHash\":\"...\"}. CANNOT_BLOCK_SELF if blocking own number."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('blocked', () => pm.expect(pm.response.json().success).to.eql(true));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /blocks/check",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"blockedPhone\": \"{{other_phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/blocks/check", "host": ["{{base_url}}"], "path": ["blocks", "check"] },
+            "description": "Auth required. Returns {\"isBlocked\": boolean}."
+          }
+        },
+        {
+          "name": "POST /blocks/list",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/blocks/list", "host": ["{{base_url}}"], "path": ["blocks", "list"] },
+            "description": "Auth required, no body. Returns {\"blockedPhoneHashes\": [\"...\"]}."
+          }
+        },
+        {
+          "name": "POST /blocks/unblock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"blockedPhone\": \"{{other_phone}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/blocks/unblock", "host": ["{{base_url}}"], "path": ["blocks", "unblock"] },
+            "description": "Auth required. Accepts blockedPhone OR blockedPhoneHash. Returns {\"success\":true,\"unblockedPhoneHash\":\"...\"}."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Reports",
+      "item": [
+        {
+          "name": "POST /reports/file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportedPhone\": \"{{other_phone}}\",\n    \"reason\": \"Spam in DMs\",\n    \"messages\": [\n        { \"content\": \"bad message 1\", \"createdAt\": \"2026-09-14T10:00:00.000Z\" },\n        { \"content\": \"bad message 2\", \"createdAt\": \"2026-09-14T10:05:00.000Z\" }\n    ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/reports/file", "host": ["{{base_url}}"], "path": ["reports", "file"] },
+            "description": "Auth required. Returns {\"success\":true,\"reportId\":uuid}. Stores the reportId into collection variable for follow-up calls."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.reportId) pm.collectionVariables.set('report_id', j.reportId);",
+                  "pm.test('report filed', () => pm.expect(j.success).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /reports/list",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{base_url}}/reports/list", "host": ["{{base_url}}"], "path": ["reports", "list"] },
+            "description": "Auth required, no body. Returns {\"reports\":[{id, reportedPhoneHash, status, createdAt, reviewedAt, actionedAt}]}, newest first."
+          }
+        },
+        {
+          "name": "POST /reports/get",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportId\": \"{{report_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/reports/get", "host": ["{{base_url}}"], "path": ["reports", "get"] },
+            "description": "Auth required. Returns report + \"decryptedMessageSnapshot\" (evidence JSON).\n404 {\"error\":\"Report not found\"} for another user's / unknown report (IDOR guard)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Relay",
+      "item": [
+        {
+          "name": "POST /relay/send (fan-out by user)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"recipientUserId\": \"{{user_id}}\",\n    \"ciphertext\": \"deadbeefcafe\",\n    \"messageType\": \"text\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/relay/send", "host": ["{{base_url}}"], "path": ["relay", "send"] },
+            "description": "Auth required. Fan-out: one row per active device of recipientUserId. Exactly one of recipientUserId | recipientDeviceId | recipientGroupId required.\nReturns {\"success\":true,\"count\":N,\"rows\":[{id, recipientDeviceId}]}. Stores first row id into relay_id.\n404 if sender or recipient has no registered device."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "if (j.rows && j.rows.length) pm.collectionVariables.set('relay_id', j.rows[0].id);",
+                  "pm.test('relay sent', () => pm.expect(j.success).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /relay/poll",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"deviceId\": \"{{device_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/relay/poll", "host": ["{{base_url}}"], "path": ["relay", "poll"] },
+            "description": "Auth required. Returns undelivered messages for the device: {\"messages\":[{id, senderDeviceId, ciphertext(hex), messageType, sizeBytes, createdAt, expiresAt}]}.\ndeviceId defaults to JWT deviceId when omitted."
+          }
+        },
+        {
+          "name": "POST /relay/ack",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"messageId\": \"{{relay_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/relay/ack", "host": ["{{base_url}}"], "path": ["relay", "ack"] },
+            "description": "Auth required. Marks a relayed message delivered. Returns {\"success\":true,\"messageId\",\"deliveredAt\"}. 404 if not found."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Moderation",
+      "item": [
+        {
+          "name": "POST /moderation/warn",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportId\": \"{{report_id}}\",\n    \"adminId\": \"{{admin_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/moderation/warn", "host": ["{{base_url}}"], "path": ["moderation", "warn"] },
+            "description": "Admin only. Requires an admin token (see Collection-level 'Reset admin token' helper below or /debug/admin-token with debug enabled).\nBody must include reportId (uuid) and adminId (existing uuid in dashboard_admins).\nReturns {\"success\":true,\"action\":\"warn\",\"reportId\"}. 401 INVALID_ADMIN_TOKEN. 404 ADMIN_NOT_FOUND/REPORT_NOT_FOUND."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Mint an admin JWT (HS256 signed with JWT_SECRET) in the sandbox.",
+                  "const secret = pm.collectionVariables.get('jwt_secret');",
+                  "if (secret) {",
+                  "  const encoder = new TextEncoder();",
+                  "  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+                  "  const header = { alg: 'HS256', typ: 'JWT' };",
+                  "  const now = Math.floor(Date.now()/1000);",
+                  "  const payload = { adm: 'admin', iat: now, exp: now + 60*60, iss: 'wpt-backend', sub: pm.collectionVariables.get('admin_id') };",
+                  "  const signingInput = [b64url(encoder.encode(JSON.stringify(header))), b64url(encoder.encode(JSON.stringify(payload)))].join('.');",
+                  "  const sig = CryptoJS.HmacSHA256(signingInput, secret).toString(CryptoJS.enc.Hex);",
+                  "  const sigB64 = Buffer.from ? null : null;",
+                  "  // base64url of the raw 32-byte signature bytes",
+                  "  const bytes = [];",
+                  "  for (let i = 0; i < 32; i++) bytes.push(parseInt(sig.substr(i*2, 2), 16));",
+                  "  const sigUrl = btoa(String.fromCharCode(...bytes)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+                  "  const token = signingInput + '.' + sigUrl;",
+                  "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + token });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /moderation/restrict",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportId\": \"{{report_id}}\",\n    \"adminId\": \"{{admin_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/moderation/restrict", "host": ["{{base_url}}"], "path": ["moderation", "restrict"] },
+            "description": "Admin only. Same body shape as /moderation/warn, action \"restrict\". Pre-request script mints the admin token."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.collectionVariables.get('jwt_secret');",
+                  "if (secret) {",
+                  "  const encoder = new TextEncoder();",
+                  "  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+                  "  const header = { alg: 'HS256', typ: 'JWT' };",
+                  "  const now = Math.floor(Date.now()/1000);",
+                  "  const payload = { adm: 'admin', iat: now, exp: now + 60*60, iss: 'wpt-backend', sub: pm.collectionVariables.get('admin_id') };",
+                  "  const signingInput = [b64url(encoder.encode(JSON.stringify(header))), b64url(encoder.encode(JSON.stringify(payload)))].join('.');",
+                  "  const sig = CryptoJS.HmacSHA256(signingInput, secret).toString(CryptoJS.enc.Hex);",
+                  "  const bytes = [];",
+                  "  for (let i = 0; i < 32; i++) bytes.push(parseInt(sig.substr(i*2, 2), 16));",
+                  "  const sigUrl = btoa(String.fromCharCode(...bytes)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+                  "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + signingInput + '.' + sigUrl });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /moderation/ban",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportId\": \"{{report_id}}\",\n    \"adminId\": \"{{admin_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/moderation/ban", "host": ["{{base_url}}"], "path": ["moderation", "ban"] },
+            "description": "Admin only. Same body shape, action \"ban\"."
+          }
+        },
+        {
+          "name": "POST /moderation/dismiss",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"reportId\": \"{{report_id}}\",\n    \"adminId\": \"{{admin_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/moderation/dismiss", "host": ["{{base_url}}"], "path": ["moderation", "dismiss"] },
+            "description": "Admin only. Same body shape, action \"dismiss\"."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Debug",
+      "item": [
+        {
+          "name": "GET /debug/tables (gated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/debug/tables", "host": ["{{base_url}}"], "path": ["debug", "tables"] },
+            "description": "Triple-gated (DEBUG=1 + NODE_ENV!=production + localhost). Returns an HTML table dump when enabled, 404 otherwise."
+          }
+        },
+        {
+          "name": "GET /debug/admin-token (gated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/debug/admin-token", "host": ["{{base_url}}"], "path": ["debug", "admin-token"] },
+            "description": "Triple-gated. Returns {\"adminId\",\"token\"} for the first dashboard admin when enabled (handy for moderation testing), 404 otherwise."
+          }
+        }
+      ]
+    }
+  ]
+}

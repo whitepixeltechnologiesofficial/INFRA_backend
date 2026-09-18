@@ -1,0 +1,868 @@
+{
+  "info": {
+    "name": "WPT Backend - Complete API Catalog (Users & Admins)",
+    "description": "Full catalog of all REST API endpoints supported by @wpt/backend: system, onboarding & user auth, profile, blocks, reports, relay, dashboard admin auth, moderation, and debug.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "item": [
+    {
+      "name": "Health & System",
+      "item": [
+        {
+          "name": "Health / Liveness Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/health",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "health"]
+            },
+            "description": "Public liveness check for monitoring service availability and uptime. Returns {\"ok\":true}."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Onboarding & User Authentication",
+      "item": [
+        {
+          "name": "Accept Legal & Age Requirements",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"+12125551171\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/accept-legal",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "accept-legal"]
+            },
+            "description": "Records user acceptance of Terms of Service, Privacy Policy, and 16+ age requirement. MUST complete before OTP verification. Returns {\"success\":true}."
+          },
+          "response": []
+        },
+        {
+          "name": "Send OTP Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"+12125551171\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/otp/send",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "otp", "send"]
+            },
+            "description": "Generates a 6-digit OTP, stores its SHA-256 hash with 5-minute expiry, and delivers via Twilio or dev console ([SMS-DEV] OTP line in backend log). Rate limited to 3 per 60s per phone."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify OTP & Handoff Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"+12125551171\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/otp/verify",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "otp", "verify"]
+            },
+            "description": "Verifies the 6-digit OTP with timing-safe comparison. On success creates/updates the user, opens a session, and returns accessToken + refreshToken + userId + sessionId with routing (chats|profile_setup)."
+          },
+          "response": []
+        },
+        {
+          "name": "Check Existing User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"+12125551171\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/check-existing-user",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "check-existing-user"]
+            },
+            "description": "Checks if a phone number is registered. Returns boolean only ({\"exists\":true|false}) to prevent user enumeration attacks."
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh End-User Access Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"<REFRESH_TOKEN>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/refresh",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "refresh"]
+            },
+            "description": "Validates the refresh token (batched SHA-256 lookup + bcrypt compare) and issues a fresh 1-hour access token. Returns {\"accessToken\":\"...\"}."
+          },
+          "response": []
+        },
+        {
+          "name": "New Device Login Handoff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"<REFRESH_TOKEN>\",\n  \"deviceInfo\": {\n    \"deviceId\": \"device_1789000000000_abcd\",\n    \"deviceName\": \"Pixel 7 Pro\",\n    \"platform\": \"android\"\n  }\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/login/handoff",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "login", "handoff"]
+            },
+            "description": "Transfers the account session to a new device using an existing valid refresh token. Revokes previous devices (previousDevicesLoggedOut count) and returns fresh tokens."
+          },
+          "response": []
+        },
+        {
+          "name": "Check Device Session Validity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceId\": \"device_1789000000000_abcd\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/onboarding/session/check",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "onboarding", "session", "check"]
+            },
+            "description": "Checks if the device session is active or revoked (isValid true|false). Requires authenticated user JWT. 401 if no token; 400 if deviceId missing."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Profile Management",
+      "item": [
+        {
+          "name": "Create Initial Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"about\": \"Hey there! I am using WPT.\",\n  \"photo\": \"https://example.com/avatar.jpg\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/profile/create",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "profile", "create"]
+            },
+            "description": "Creates the user profile during onboarding (name required, about/photo optional). User ID comes from the JWT sub claim (prevents IDOR). Returns the created profile."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Authenticated User Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/profile/get",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "profile", "get"]
+            },
+            "description": "Retrieves the authenticated user's profile. User ID resolved from the JWT sub. Returns id, name, photo, about, phoneNumber, createdAt, updatedAt."
+          },
+          "response": []
+        },
+        {
+          "name": "Update User Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Doe\",\n  \"about\": \"Available\",\n  \"photo\": null\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/profile/update",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "profile", "update"]
+            },
+            "description": "Partially updates profile fields (name, about, photo). Omitted fields are left unchanged; photo null clears it. Returns the updated profile."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Blocks & Privacy",
+      "item": [
+        {
+          "name": "Block a Phone Number",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blockedPhone\": \"+12125561172\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/blocks/block",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "blocks", "block"]
+            },
+            "description": "Blocks a phone number for the authenticated user. The number is hashed (GLOBAL_SALT) before storage; returns blockedPhoneHash. CANNOT_BLOCK_SELF if blocking own number."
+          },
+          "response": []
+        },
+        {
+          "name": "Check if Number is Blocked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blockedPhone\": \"+12125561172\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/blocks/check",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "blocks", "check"]
+            },
+            "description": "Returns {\"isBlocked\":true|false} for the given phone number against the auth user's block list."
+          },
+          "response": []
+        },
+        {
+          "name": "List Blocked Numbers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/blocks/list",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "blocks", "list"]
+            },
+            "description": "Returns all blocked phone hashes for the authenticated user: {\"blockedPhoneHashes\":[\"...\"]}."
+          },
+          "response": []
+        },
+        {
+          "name": "Unblock a Phone Number",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blockedPhone\": \"+12125561172\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/blocks/unblock",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "blocks", "unblock"]
+            },
+            "description": "Unblocks a number. Accepts EITHER blockedPhone (hashed internally) OR blockedPhoneHash (raw hash from /blocks/list). Returns unblockedPhoneHash."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Reports & Safety",
+      "item": [
+        {
+          "name": "File a Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportedPhone\": \"+12125561172\",\n  \"reason\": \"Spam in DMs\",\n  \"messages\": [\n    { \"content\": \"bad message 1\", \"createdAt\": \"2026-09-14T10:00:00.000Z\" },\n    { \"content\": \"bad message 2\", \"createdAt\": \"2026-09-14T10:05:00.000Z\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/reports/file",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "reports", "file"]
+            },
+            "description": "Files a moderation report with optional evidence messages (capped at 20 rows, content truncated to 5000 chars). The reported number is hashed. Returns reportId. CANNOT_REPORT_SELF guard."
+          },
+          "response": []
+        },
+        {
+          "name": "List My Reports",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/reports/list",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "reports", "list"]
+            },
+            "description": "Returns the authenticated user's reports (newest first): id, reportedPhoneHash, status, createdAt, reviewedAt, actionedAt."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Report Details",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/reports/get",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "reports", "get"]
+            },
+            "description": "Returns full report details including decryptedMessageSnapshot (evidence JSON). Only own reports are readable; unknown/other's reports return 404 (IDOR guard)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Message Relay",
+      "item": [
+        {
+          "name": "Send Relay Message (Fan-out by User)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipientUserId\": \"<RECIPIENT_USER_ID>\",\n  \"ciphertext\": \"deadbeefcafe\",\n  \"messageType\": \"text\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/relay/send",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "relay", "send"]
+            },
+            "description": "Creates one message_relay row per active device of the recipient user. Exactly one of recipientUserId | recipientDeviceId | recipientGroupId is required; ciphertext is hex-encoded. Returns count + created row ids."
+          },
+          "response": []
+        },
+        {
+          "name": "Send Relay Message (Single Device)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipientDeviceId\": \"<RECIPIENT_DEVICE_ID>\",\n  \"ciphertext\": \"deadbeefcafe\",\n  \"messageType\": \"text\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/relay/send",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "relay", "send"]
+            },
+            "description": "Creates a single message_relay row targeting one device. Same rules as fan-out; recipientDeviceId provided instead of recipientUserId."
+          },
+          "response": []
+        },
+        {
+          "name": "Poll Undelivered Relay Messages",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceId\": \"<DEVICE_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/relay/poll",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "relay", "poll"]
+            },
+            "description": "Returns all undelivered messages for the device (deliveredAt IS NULL). deviceId defaults to the JWT deviceId when omitted. Returns hex ciphertext + metadata."
+          },
+          "response": []
+        },
+        {
+          "name": "Acknowledge Relay Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <APP_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageId\": \"<RELAY_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/relay/ack",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "relay", "ack"]
+            },
+            "description": "Marks a relayed message as delivered (sets deliveredAt). Returns success, messageId, and deliveredAt. 404 if the message does not exist."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Dashboard Admin Authentication",
+      "item": [
+        {
+          "name": "Dashboard Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testadmin@wpt.dev\",\n  \"password\": \"TestAdmin@123\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/admin/login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "admin", "login"]
+            },
+            "description": "Authenticates a dashboard administrator using email + password against dashboard_admins (bcrypt12). Returns an admin JWT (HS256, 8h) with the adm:admin claim used for all moderation calls."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Admin Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/admin/me",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "admin", "me"]
+            },
+            "description": "Returns details of the authenticated dashboard admin (adminId, email, role). Validates the bearer admin token."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Moderation Actions",
+      "item": [
+        {
+          "name": "Warn Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/warn",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "warn"]
+            },
+            "description": "Issues a warning on a report. Calls transaction-safe public.moderate_report() which updates the report AND writes an audit_log row in the same transaction. Returns action:warn."
+          },
+          "response": []
+        },
+        {
+          "name": "Restrict Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/restrict",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "restrict"]
+            },
+            "description": "Restricts the reported user. Same moderate_report() flow, action: restrict."
+          },
+          "response": []
+        },
+        {
+          "name": "Ban Reported User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/ban",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "ban"]
+            },
+            "description": "Bans the reported user. Same moderate_report() flow, action: ban."
+          },
+          "response": []
+        },
+        {
+          "name": "Dismiss Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer <DASHBOARD_ACCESS_TOKEN>"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportId\": \"<REPORT_ID>\",\n  \"adminId\": \"<ADMIN_ID>\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:4000/api/v1/moderation/dismiss",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "moderation", "dismiss"]
+            },
+            "description": "Dismisses (rejects) a report. Same moderate_report() flow, action: dismiss."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Debug & Diagnostics",
+      "item": [
+        {
+          "name": "View DB Tables (HTML Dev Viewer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/debug/tables",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "debug", "tables"]
+            },
+            "description": "Developer HTML viewer displaying current database state (users, sessions, OTP hashes, legal acceptances, outbox). Gated by DEBUG=1, non-production, and localhost IP."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Debug Admin Token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:4000/api/v1/debug/admin-token",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "4000",
+              "path": ["api", "v1", "debug", "admin-token"]
+            },
+            "description": "Returns {\"adminId\",\"token\"} for the first dashboard admin. Useful for bootstrapping admin testing without the login flow. Gated by DEBUG=1, non-production, localhost."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "app_access_token",
+      "value": "<APP_ACCESS_TOKEN>",
+      "type": "string"
+    },
+    {
+      "key": "dashboard_access_token",
+      "value": "<DASHBOARD_ACCESS_TOKEN>",
+      "type": "string"
+    },
+    {
+      "key": "refresh_token",
+      "value": "<REFRESH_TOKEN>",
+      "type": "string"
+    },
+    {
+      "key": "admin_id",
+      "value": "<ADMIN_ID>",
+      "type": "string"
+    },
+    {
+      "key": "report_id",
+      "value": "<REPORT_ID>",
+      "type": "string"
+    },
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000/api/v1",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{app_access_token}}",
+        "type": "string"
+      }
+    ]
+  }
+}
