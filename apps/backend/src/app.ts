@@ -10,7 +10,6 @@ import debugRoutes from "./routes/debug.js";
 import blocksRoutes from "./routes/blocks.js";
 import reportsRoutes from "./routes/reports.js";
 import moderationRoutes from "./routes/moderation.js";
-import adminRoutes from "./routes/admin.js";
 import relayRoutes from "./routes/relay.js";
 import {
   initSocketRegistry,
@@ -66,7 +65,6 @@ export function createApp(): BackendServer {
   app.use(`/api/${API_VERSION}/reports`, reportsRoutes);
   app.use(`/api/${API_VERSION}/moderation`, moderationRoutes);
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
-  app.use(`/api/${API_VERSION}/admin`, adminRoutes);
 
   const httpServer = createServer(app);
 

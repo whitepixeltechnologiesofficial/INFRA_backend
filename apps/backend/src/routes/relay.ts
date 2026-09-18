@@ -15,7 +15,10 @@ import { eq, and, or, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { devices } from "../db/devices-schema.js";
+import { users } from "../db/users-schema.js";
+import { blocks } from "../db/blocks-schema.js";
 import { messageRelay } from "../db/message-relay-schema.js";
+import { phoneHash } from "../utils/phone-hash.js";
 
 const router: Router = Router();
 
@@ -23,6 +26,92 @@ router.use(requireAuth);
 
 /** Allowed message types (mirrors the DB enum to avoid 22P02 500s). */
 const MESSAGE_TYPES = new Set(["text", "image", "video", "audio", "file", "system"]);
+
+// ──────────────────────────────────────────────────
+// DB-2.4 block enforcement — app-layer guard before insert.
+//
+// The blocks table is keyed by phone_hash (blocker + blocked directions)
+// and there are NO RLS policies (authorization is entirely app-layer).
+// Therefore relay/send must reject messages when a block exists in EITHER
+// direction (A banned B → neither A→B nor B→A may proceed, per DB-2.4's
+// "bidirectional block" requirement), and relay/poll must never hand a
+// blocked sender's message to its recipient.
+// ──────────────────────────────────────────────────
+
+/** Resolve the phone hash for a user id from the users table. */
+async function resolvePhoneHashForUser(
+  userId: string,
+  db: ReturnType<typeof getDb>,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ phoneNumber: users.phoneNumber })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row ? phoneHash(row.phoneNumber) : null;
+}
+
+/** Resolve the recipient's phone hash from a userId or deviceId (group = null). */
+async function resolveRecipientPhoneHash(
+  recipientUserId: string | undefined,
+  recipientDeviceId: string | undefined,
+  db: ReturnType<typeof getDb>,
+): Promise<string | null> {
+  if (recipientUserId) {
+    return resolvePhoneHashForUser(recipientUserId, db);
+  }
+  if (recipientDeviceId) {
+    const [row] = await db
+      .select({ phoneNumber: users.phoneNumber })
+      .from(devices)
+      .innerJoin(users, eq(devices.userId, users.id))
+      .where(eq(devices.id, recipientDeviceId))
+      .limit(1);
+    return row ? phoneHash(row.phoneNumber) : null;
+  }
+  return null;
+}
+
+/** True when a block exists between two hashes in EITHER direction. */
+async function hasBlockBetween(
+  hashA: string,
+  hashB: string,
+  db: ReturnType<typeof getDb>,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ blockerPhoneHash: blocks.blockerPhoneHash })
+    .from(blocks)
+    .where(
+      or(
+        and(eq(blocks.blockerPhoneHash, hashA), eq(blocks.blockedPhoneHash, hashB)),
+        and(eq(blocks.blockerPhoneHash, hashB), eq(blocks.blockedPhoneHash, hashA)),
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
+/**
+ * The set of phone hashes with which the given hash has a block in either
+ * direction. poll uses this to filter out messages from blocked partners.
+ */
+async function blockedPartnerHashes(
+  selfHash: string,
+  db: ReturnType<typeof getDb>,
+): Promise<Set<string>> {
+  const rows = await db
+    .select({
+      blockerPhoneHash: blocks.blockerPhoneHash,
+      blockedPhoneHash: blocks.blockedPhoneHash,
+    })
+    .from(blocks)
+    .where(or(eq(blocks.blockerPhoneHash, selfHash), eq(blocks.blockedPhoneHash, selfHash)));
+  const partners = new Set<string>();
+  for (const r of rows) {
+    partners.add(r.blockerPhoneHash === selfHash ? r.blockedPhoneHash : r.blockerPhoneHash);
+  }
+  return partners;
+}
 
 /** Strict hex ciphertext validation — reject silently-truncated garbage. */
 function isValidHexCiphertext(v: unknown): v is string {
@@ -55,6 +144,7 @@ function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
 router.post("/send", async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
+    const authDeviceId = res.locals.auth!.deviceId;
 
     const {
       recipientUserId,
@@ -89,23 +179,17 @@ router.post("/send", async (req: Request, res: Response) => {
     }
 
     const db = getDb();
-    const ciphertextBytes = Buffer.from(ciphertext, "hex");
-    const sizeBytes = ciphertextBytes.length;
 
-    // The sender must be a registered device: sender_device_id is a
-    // uuid FK to devices.id, so the JWT's string deviceId cannot be
-    // used here. Resolve the authenticated user's active device.
-    const sender = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(eq(devices.userId, authUserId), eq(devices.isActive, true)))
-      .limit(1);
-
-    if (sender.length === 0) {
-      res.status(404).json({ error: "Sender has no registered device" });
+    // ── DB-2.4: bidirectional block enforcement before insert ──
+    const senderHash = await resolvePhoneHashForUser(authUserId, db);
+    const recipientHash = await resolveRecipientPhoneHash(recipientUserId, recipientDeviceId, db);
+    if (senderHash && recipientHash && (await hasBlockBetween(senderHash, recipientHash, db))) {
+      res.status(403).json({ error: "BLOCKED", message: "Messaging between these two users is blocked" });
       return;
     }
-    const senderDeviceId = sender[0]!.id;
+
+    const ciphertextBytes = Buffer.from(ciphertext, "hex");
+    const sizeBytes = ciphertextBytes.length;
 
     // If recipientUserId is given, fan out one row per device.
     if (recipientUserId) {
@@ -123,7 +207,7 @@ router.post("/send", async (req: Request, res: Response) => {
         .insert(messageRelay)
         .values(
           devList.map((d) => ({
-            senderDeviceId,
+            senderDeviceId: authDeviceId,
             recipientDeviceId: d.id,
             recipientUserId,
             ciphertext: ciphertextBytes,
@@ -149,7 +233,7 @@ router.post("/send", async (req: Request, res: Response) => {
     const [row] = await db
       .insert(messageRelay)
       .values({
-        senderDeviceId,
+        senderDeviceId: authDeviceId,
         recipientDeviceId,
         recipientUserId: null,
         recipientGroupId: recipientGroupId ?? null,
@@ -185,9 +269,24 @@ router.post("/poll", async (req: Request, res: Response) => {
     const targetDevice = deviceId || authDeviceId;
 
     const db = getDb();
+    const senderHash = await resolvePhoneHashForUser(authUserId, db);
+    const blockedPartners =
+      senderHash ? await blockedPartnerHashes(senderHash, db) : new Set<string>();
+
     const rows = await db
-      .select()
+      .select({
+        id: messageRelay.id,
+        senderDeviceId: messageRelay.senderDeviceId,
+        ciphertext: messageRelay.ciphertext,
+        messageType: messageRelay.messageType,
+        sizeBytes: messageRelay.sizeBytes,
+        createdAt: messageRelay.createdAt,
+        expiresAt: messageRelay.expiresAt,
+        senderPhone: users.phoneNumber,
+      })
       .from(messageRelay)
+      .leftJoin(devices, eq(messageRelay.senderDeviceId, devices.id))
+      .leftJoin(users, eq(devices.userId, users.id))
       .where(
         and(
           eq(messageRelay.recipientDeviceId, targetDevice),
@@ -197,8 +296,15 @@ router.post("/poll", async (req: Request, res: Response) => {
       )
       .orderBy(messageRelay.createdAt);
 
+    // DB-2.4: drop messages whose sender is a blocked partner (either direction),
+    // so a blocked user's messages are never delivered to the recipient.
+    const visible = rows.filter((r) => {
+      if (!r.senderPhone) return true;
+      return !blockedPartners.has(phoneHash(r.senderPhone));
+    });
+
     res.json({
-      messages: rows.map((r) => ({
+      messages: visible.map((r) => ({
         id: r.id,
         senderDeviceId: r.senderDeviceId,
         ciphertext: r.ciphertext ? r.ciphertext.toString("hex") : null,

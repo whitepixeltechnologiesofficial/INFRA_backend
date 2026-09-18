@@ -10,7 +10,7 @@ coverage/
 .env
 .env.local
 .env.*.local
-.env.example
+!.env.example
 env/
 .DS_Store
 *.log
