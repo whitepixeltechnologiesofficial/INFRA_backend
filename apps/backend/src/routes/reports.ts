@@ -97,28 +97,49 @@ router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
       if (!report) throw new Error("REPORT_CREATE_FAILED");
 
       if (messages && Array.isArray(messages) && messages.length > 0) {
-        const now = new Date();
-        // Cap evidence to 20 rows here as a safety net — the DB trigger
-        // also enforces the 20-message cap.
-        const bounded = messages.slice(0, 20);
-        for (const m of bounded) {
-          const content = typeof m.content === "string" ? m.content.slice(0, 5000) : "";
-          if (!content) continue;
-          await tx.insert(reportEvidence).values({
-            reportId: report.id,
-            messageContent: content,
-            messageCreatedAt: m.createdAt ? new Date(m.createdAt) : now,
-            capturedAt: now,
-          });
-        }
-      }
+  const now = new Date();
+  const sevenDaysAgo = new Date(
+    now.getTime() - 7 * 24 * 60 * 60 * 1000
+  );
 
+  // Keep only valid messages from the last 7 days,
+  // then keep the newest 20 messages.
+  const bounded = messages
+    .map((m) => ({
+      ...m,
+      parsedCreatedAt: m.createdAt ? new Date(m.createdAt) : now,
+    }))
+    .filter(
+      (m) =>
+        !Number.isNaN(m.parsedCreatedAt.getTime()) &&
+        m.parsedCreatedAt >= sevenDaysAgo
+    )
+    .sort(
+      (a, b) =>
+        b.parsedCreatedAt.getTime() - a.parsedCreatedAt.getTime()
+    )
+    .slice(0, 20);
+
+  for (const m of bounded) {
+    const content =
+      typeof m.content === "string" ? m.content.slice(0, 5000) : "";
+
+    if (!content) continue;
+
+    await tx.insert(reportEvidence).values({
+      reportId: report.id,
+      messageContent: content,
+      messageCreatedAt: m.parsedCreatedAt,
+      capturedAt: now,
+    });
+  }
+}
       return report.id;
     });
 
     res.json({ success: true, reportId });
   } catch (err) {
-    console.error("POST /reports/file error");
+    console.error("POST /reports/file error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
