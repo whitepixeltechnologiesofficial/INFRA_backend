@@ -6,8 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "lint": "node scripts/source-lint.js",
+    "typecheck": "tsc --noEmit",
+    "web:server": "node server/wpt-server.mjs",
+    "verify": "node scripts/web-qr13-verify.js && node scripts/web-web14-verify.js && node scripts/web-web14-live.js && node scripts/web-web15-verify.js && node scripts/web-web16-verify.js && node scripts/web-web17-verify.js && node scripts/web-e2e.js"
   },
   "dependencies": {
     "@wpt/api-client": "workspace:*",
@@ -15,7 +17,8 @@
     "@wpt/shared": "workspace:*",
     "next": "^15.5.24",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
