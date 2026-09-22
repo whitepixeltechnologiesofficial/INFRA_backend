@@ -217,6 +217,19 @@ function readBody(req) {
   });
 }
 
+// CORS for the browser SPA. The Web client is served by the Next.js app on its
+// own port (dev story: NEXT_PUBLIC_WPT_API_URL points here), so API responses
+// must allow that origin. Origin-reflecting + header-based auth only (no
+// cookies), so no Allow-Credentials is needed. WebSocket is not CORS-restricted.
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
 // Real-time surface — a JSON message protocol over the standard WebSocket.
 //   server -> client: {type:'accountLinked'|'qrExpired'|'message'|'webForceLoggedOut'|'webLoggedOff'
 //                      |'mockPhoneStatus'|'mockIncomingMessage'|'presenceChanged'|'groupUpdated'|'usersUpdated', ...}
@@ -251,6 +264,13 @@ async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const p = url.pathname;
   const method = req.method || "GET";
+
+  applyCors(req, res);
+  if (method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
 
   // Demo phone page (the QR scan target).
   if (p.startsWith("/phone/link/")) {

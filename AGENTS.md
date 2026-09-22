@@ -606,6 +606,7 @@ Verification harnesses (Node, tsx, no device):
 - Two-physical-device manual verification: NOT YET (no device available);
   documented in `.env.example` with full procedure.
 
+<<<<<<< ours
 ### URL phone-number auth bypass — central deep-link guard (VERIFIED, uncommitted)
 
 Expo Go deep-link test used URLs like `/device-handoff?phoneNumber=9876543210`.
@@ -651,6 +652,182 @@ deep link must stop at Legal Acceptance until the user explicitly clicks Accept:
   same link -> Phone Entry; after full OTP login -> Device Handoff/Chats.
 
 ## Conventions
+=======
+### WEB-R1.4 — Web session survives phone going offline (VERIFIED, uncommitted)
+
+Implemented in `apps/web/qr-login` (same component as WEB-R1.2/1.3, per explicit user
+decision — NOT the Next.js `apps/web/app` app nor the production backend):
+
+- Only a 401 logs the Web out: `/api/session/validate/:webToken` runs at link, boot, and
+  every 30s; transient fetch errors are ignored (connectivity blip / offline phone never
+  ends the session); `performSessionLogout()` returns the Web to the QR gate.
+- No phone-offline UI: Web never polls phone state and never blocks; socket auto-reconnects
+  and re-syncs recent chats (`loadRecentChats()`, `loadServerUsers()`).
+- Backend-mediated send + offline outbox: real server chats send via `POST /api/messages/send`
+  (backend relay, phone-independent). Sends are queued first in a localStorage outbox
+  (`wpt_web_outbox_v1`) — `public/outbox.js` (pure, Node-testable UMD module:
+  enqueue/dedupe/pending/failed/retry/markSent/count/clear). Retry flush runs on socket connect,
+  4s tick, and tab-visible. Optimistic sends render identically and are replaced by the server
+  message id on delivery (`finalizeDelivered`). Only fake/local (non-server) contacts keep the
+  legacy demo auto-reply. Server history loads into `openChat` via `serverChatHistory()`
+  (avoids re-ping with runtime `historyLoadedChats` Set; dupes prevented by name match in
+  `loadRecentChats`).
+- Server: new QA hooks `POST /api/mock/link-web` (headless Web-session mint) and
+  `GET /api/mock/web-sessions` for the harness.
+- Verification: `node scripts\qr-14-verify.js` passes 29/29 (outbox contract incl.
+  persistence round-trip; session valid before/while/after phone offline; relay send
+  accepted + stored + previewed with the phone offline; phone online reconnect; revocation
+  -> 401). NEW `node scripts\qr-14-live.js` passes 20/20 — a real socket.io-client
+  (added as devDependency: `socket.io-client@4.8.3`) proves at the wire level that the Web
+  socket stays connected and keeps delivering live inbound while the phone is offline, reconnects
+  after its own blip, and only revocation (401 + `webForceLoggedOut`) ends the session.
+  `qr-13-verify.js` still 20/20; all 5 inline scripts + outbox.js + server.js
+  parse clean (`node --check` / `new Function`).
+
+### WEB-R1.5 — Invisible reconnect sync (VERIFIED, uncommitted)
+
+Depends on WEB-R1.4, same `apps/web/qr-login` component (per the standing scope decision).
+When the phone/socket reconnects, state re-sync is fully background with **no visible sync
+indicator** (locked Phase-5 design decision):
+
+- **No sync UI exists.** The reconnect handler does only silent work: `flushOutbox()` +
+  `loadRecentChats()`. The early-R1.4 `#syncChip` pill ("N sending…"/"pending — retrying…")
+  and the `.pending-send` message-dim CSS were REMOVED; optimistic sends render identically
+  and `finalizeDelivered` swaps in the server message id in place. No spinners/toasts/banners.
+- **Clean console:** removed the leftover boot `console.log` icon block; the only console
+  output left is non-sync `console.warn` in save/restore error paths.
+- **Large-backlog edge case:** `loadRecentChats` is single-flight (`recentChatsFetchInFlight`
+  guard) so reconnect bursts coalesce instead of stacking queries — no perceptible delay,
+  no loading state.
+- Verification: NEW `node scripts\qr-15-verify.js` passes 32/32 — static checks on
+  `public/index.html` (every sync-UI token absent: `syncChip`/`pending-send`/`sending…`/
+  `retrying…`/`syncing`; zero `console.log`; no sync-referencing console calls; all 5 inline
+  script blocks parse) + dynamic checks (link a Web session, run 3 phone offline→online cycles,
+  session stays valid every cycle, backlog intact, full history available to the background
+  refetch). Regressions: `qr-14-verify.js` 29/29, `qr-14-live.js` 20/20, `qr-13-verify.js`
+  20/20 — all green. Manual VERIFY remains: repeatedly disconnect/reconnect the phone and
+  visually confirm no sync UI ever appears + console shows no sync messages.
+
+### WEB tab-close persistence — closing a tab does not end the session (VERIFIED, uncommitted)
+
+Requirement (depends on WEB-R1.4; MUST NOT be confused with WEB-R1.6 manual logoff — the two
+behaviours stay separate): closing the browser tab (not explicitly logging off) preserves the
+session; reopening the site resumes the same logged-in state with no re-scan. Target per the
+standing scope decision is `apps/web/qr-login` (the requirement template's `apps/web/app/`
+path is stale — the Next.js app has no session logic). The mechanism ALREADY satisfies it
+(no source change needed); this entry adds machine verification + documentation:
+
+- **Persisted, never in-memory.** The session `webToken`+`userId` live in `localStorage`
+  (`wpt_web_session_v1`), which survives tab close and browser restarts; `sessionStorage`
+  is never used. Chat state (`wpt_web_app_state_v1`) and the offline outbox
+  (`wpt_web_outbox_v1`) persist the same way.
+- **Boot restore needs no QR.** `__bootWebSession()` on every load restores the saved session
+  and `createLinkQR()` short-circuits to `showLinkedWeb()` whenever a saved `webToken`
+  exists — the QR gate never renders for a live session.
+- **Closing the tab runs no cleanup.** There is no `beforeunload`/`pagehide`/`unload`
+  handler; the `visibilitychange` handler returns as soon as the tab is hidden (it only
+  flushes the outbox when visible). `clearWebSession()` has exactly 2 call sites — Settings→
+  Logout and `performSessionLogout()` (401/`webForceLoggedOut` revocation) — neither fires
+  on close.
+- **Manual logoff stays manual.** Logout is the ONLY path hitting `POST /api/session/logout`
+  (server revoke) + `clearWebSession()` + fresh QR; tab close does none of it, so the two
+  cannot be confused. Server `webSessions` has no TTL — an idle/closed-tab session is never
+  expired by the server.
+- **Edge case documented, not chased:** private/incognito browsers may clear storage on close
+  by design → session ends, re-scan required; documented in `qr-login/README.md` as expected.
+- Verification: NEW `node scripts\qr-16-verify.js` passes 31/31 — static (session in
+  `localStorage`, no close/unload cleanup path, `clearWebSession` exactly-2 call sites, manual
+  logout server-revoke + fresh QR, README incognito note) + dynamic (link a session, "close the
+  tab" = no client activity/poll, reopen → session valid + chat data intact; explicit logoff →
+  401 + gone from `web-sessions` + fresh re-link works). Regressions: `qr-14-verify.js` 29/29,
+  `qr-15-verify.js` 32/32 — all green. Manual VERIFY: link, close the tab, reopen the URL —
+  still logged in, no QR, history kept; then Settings→Logout and confirm a QR is required again.
+
+### WEB-R1.8 — New-phone login force-logs the Web off (VERIFIED, uncommitted)
+
+Requirement: when the account owner logs into the mobile app on a new/different phone, every
+active Web session is terminated **immediately** — no advance warning, no grace period (matches
+the mobile app's own new-device behaviour in `device-handoff.tsx`). Depends on WEB-R1.6
+(manual logoff stays a separate mechanism). Target is `apps/web/qr-login` per the standing
+scope decision (template `apps/web/app/` path is stale). The real-time broadcast + registry
+clearing already existed; this entry adds the missing **clear "session ended, please rescan"
+end-state** for the composing edge case + verification:
+
+- **Backend broadcast (existing, unchanged):** `invalidateWebForUser(uid, reason)` in
+  `server.js` deletes every `webSessions` entry for the user AND emits `webForceLoggedOut`
+  `{reason}` to each live Web socket room — never just token invalidation. Trigger: mobile
+  device-handoff path, simulated by `POST /api/mock/new-phone-login` →
+  `invalidateWebForUser(userId,'new_phone_login')`. Registry cleared synchronously → no grace
+  window; the kicked session's next validate is already 401.
+- **Client reason plumbing (NEW):** `webSocket.on('webForceLoggedOut',e=>performSessionLogout(e&&e.reason))`;
+  the 30s-validate 401 fallback passes `'revoked'`. `performSessionLogout(reason)` now calls
+  `showForceLogoutNotice(reason)`.
+- **Clear end-state (NEW, composing edge case):** new `#forceLogoutNotice` banner on the QR
+  gate — "Your session ended — a new phone signed in to this account, so this Web session was
+  closed immediately. Scan the QR below to reconnect." Reason-aware copy; shown ONLY on the
+  force-logout path. `showLinkedWeb()` (re-link) and the Settings→Logout handler (manual logoff,
+  WEB-R1.6) both clear it, keeping the two behaviours distinct.
+- **Not allowed, absent:** no "your session will end in X seconds" / grace-period copy anywhere.
+- Verification: NEW `node scripts\qr-17-verify.js` passes 29/29 — static (server emits
+  `webForceLoggedOut{reason}` + synchronous registry clear, no grace-period copy, notice markup
+  + reason-aware text, notice force-logout-only vs manual logout, fresh-link/401 fallback
+  wiring) + dynamic (live socket session A is kicked in real time with `reason:'new_phone_login'`
+  while active, token 401 immediately with no grace window, store cleared, fresh link works).
+  Regressions: `qr-13-verify.js` 20/20, `qr-14-verify.js` 29/29, `qr-14-live.js` 20/20,
+  `qr-15-verify.js` 32/32, `qr-16-verify.js` 31/31 — all green (qr-16's static anchor updated
+  for the new `performSessionLogout(reason)` signature). Manual VERIFY: link Web, trigger a
+  new-phone login in the mobile flow → Web is immediately returned to the QR gate with the
+  "session ended, please rescan" notice, no advance warning.
+
+### qr-login retirement — COMPLETED (uncommitted)
+
+The legacy Express/Socket.io web app (`apps/web/qr-login/`) was fully **retired and
+deleted** AFTER a functional replacement was built, verified, and proven. Earlier
+a "keep" decision applied while the replacement was still a stub; the user later
+overrode it with "complete the task end-to-end: make `apps/web/app` functional and
+independently verified BEFORE deleting, then delete qr-login + vendored QR + all
+references". That was done:
+
+- **Replacement built in `@wpt/web` (apps/web):**
+  - `server/wpt-server.mjs` — standalone server on Node built-ins (`node:http`) +
+    the `ws` library (dev dep `ws@8.21.3`). No Express, no Socket.io. Owns QR mint/
+    TTL/confirm + linking-window guard, `wpt_webSession` keys, chat relay, phone
+    page (`/phone/link/:token`), and `/api/mock/*` QA controls. Implements the same
+    JSON WS event protocol as before (`accountLinked`/`qrExpired`/`message`/
+    `webForceLoggedOut`/`webLoggedOff`/`mockPhoneStatus`/`mockIncomingMessage`/
+    `presenceChanged`), with message broadcasts carrying `kind`/`to`/`groupId`.
+  - `server/vendor/QRCode/*` — the QR encoder is genuinely reused (copied into the
+    replacement; it is not a legacy dependency).
+  - `app/` — Next.js client (React 19): `app/wpt/web-app.tsx` (orchestrator:
+    `performSessionLogout(reason)` shows the reason notice first, then clears +
+    resets to gate; 401 → `performSessionLogout("revoked")`; manual Settings→Logout
+    → `POST /api/session/logout` → `showForceLogoutNotice(null)`; boot restores the
+    saved session and short-circuits the QR gate), `app/wpt/qr-gate.tsx` (mint +
+    QR socket + force-logout notice), `app/wpt/chat-app.tsx` (list/thread/settings),
+    `app/lib/*` (web-session/app-state/api/ws/outbox-client), `lib/wptOutbox.js` +
+    `.d.ts` (offline outbox, UMD; contract re-used).
+  - Storage keys unchanged: `wpt_web_session_v1`, `wpt_web_app_state_v1`,
+    `wpt_web_outbox_v1` (all localStorage; survives tab close/restart; session
+   Storage never used; no beforeunload/pagehide/unload handlers).
+  - `apps/web/.env.example` rewritten for the replacement (`PORT`, `PUBLIC_BASE_URL`,
+    `QR_TTL_MS`, `NEXT_PUBLIC_WPT_API_URL`); `README.md` documents run + verify.
+- **Verification (all migrated from the old qr-login harnesses, none import it):**
+  `scripts/_h.mjs` shared helpers + `scripts/web-qr13-verify.js` (20), `web-web14-verify.js`
+  (30), `web-web14-live.js` (22), `web-web15-verify.js` (32), `web-web16-verify.js` (31),
+  `web-web17-verify.js` (29), `web-e2e.js` (19) — all green against the replacement.
+  `pnpm --filter @wpt/web run verify` runs the whole chain. `tsc --noEmit` clean;
+  `next build` clean (Next's built-in ESLint pass disabled in `next.config.js` —
+  the monorepo root ESLint config doesn't resolve its plugins here; `@wpt/web`'s
+  `pnpm lint` = `node scripts/source-lint.js`, an offline static gate for the raw
+  hygiene contract incl. clearWebSession=2 call sites, no console.log/sessionStorage/
+  sync-UI tokens, no legacy-path strings).
+- **Deleted:** `apps/web/qr-login/` (incl. its express/socket.io/socket.io-client
+  deps — none remain in `apps/web/package.json`). Repo-wide scan now finds the
+  string only in this history note + the lint's own detection message.
+- The requirement guardrail ("works end to end") holds: the replacement implements
+  WEB-R1.1–R1.8 and the E2E funnel (link → auth → chat → close/reopen persisted →
+  manual logout → new-phone force-logout → rescan end-state → re-link) passes.
+>>>>>>> theirs
 
 - Do not add code comments unless asked.
 - Follow existing code style in the file being edited (see neighboring files).

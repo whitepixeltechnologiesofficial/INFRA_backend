@@ -55,6 +55,33 @@ function ChatRow(props: { chat: WebChatItem; active: boolean; onOpen: (id: strin
   );
 }
 
+function cx(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(" ");
+}
+
+export function chatPaneClasses(mobileThreadOpen: boolean): { cols: string; sidebar: string; thread: string } {
+  return {
+    cols: cx("chat-cols", mobileThreadOpen && "thread-open"),
+    sidebar: cx("sidebar", !mobileThreadOpen && "only-pane"),
+    thread: cx("thread", mobileThreadOpen && "thread-active"),
+  };
+}
+
+function ChatEmptyList(props: { onNewChat: () => void }): JSX.Element {
+  return (
+    <div className="chat-empty">
+      <div className="chat-empty-icon">
+        <div className="logo">S</div>
+      </div>
+      <b className="chat-empty-title">No chats yet</b>
+      <p className="chat-empty-copy">Start a conversation with a teammate. Chats you send and receive land here.</p>
+      <button type="button" className="btn-primary chat-empty-cta" onClick={props.onNewChat}>
+        New chat
+      </button>
+    </div>
+  );
+}
+
 function MessageBubble(props: { m: WebChatMessage; mine: boolean; showName: string | null }): JSX.Element {
   const { m, mine, showName } = props;
   return (
@@ -72,6 +99,7 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
 
   const activeChat: WebChatItem | null = useMemo(
     () => state.recentChats.find((c) => c.id === state.activeChatId) ?? null,
@@ -92,11 +120,22 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
   const history: WebChatMessage[] = activeChat ? (state.chatHistory[activeChat.id] ?? []) : [];
   const me = users.find((u) => u.id === session.userId);
 
+  const panes = chatPaneClasses(mobileThreadOpen);
+
   function submit(): void {
     if (!activeChat) return;
     if (!draft.trim()) return;
     onSendMessage(activeChat.id, draft);
     setDraft("");
+  }
+
+  function openChat(id: string): void {
+    onSelectChat(id);
+    setMobileThreadOpen(true);
+  }
+
+  function backToChats(): void {
+    setMobileThreadOpen(false);
   }
 
   return (
@@ -114,8 +153,8 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
         </div>
       </header>
 
-      <div className="chat-cols">
-        <aside className="sidebar">
+      <div className={panes.cols}>
+        <aside className={panes.sidebar}>
           <div className="sidebar-head">
             <input
               className="search"
@@ -130,23 +169,29 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
             </button>
           </div>
           <div className="chat-list">
-            {filteredChats.length === 0 ? (
-              <div className="empty">No chats yet. Start one with “New chat”.</div>
+            {sortedChats.length === 0 ? (
+              <ChatEmptyList onNewChat={() => setNewChatOpen(true)} />
+            ) : filteredChats.length === 0 ? (
+              <div className="empty">No chats match your search.</div>
             ) : (
-              filteredChats.map((c) => <ChatRow key={c.id} chat={c} active={c.id === state.activeChatId} onOpen={onSelectChat} />)
+              filteredChats.map((c) => <ChatRow key={c.id} chat={c} active={c.id === state.activeChatId} onOpen={openChat} />)
             )}
           </div>
         </aside>
 
-        <main className="thread">
+        <main className={panes.thread}>
           {!activeChat ? (
             <div className="thread-empty">
               <div className="logo big">S</div>
-              <p>Pick a conversation to start chatting.</p>
+              <b>Pick a conversation</b>
+              <p>Choose a chat from the list to keep the conversation going.</p>
             </div>
           ) : (
             <>
               <div className="thread-head">
+                <button type="button" className="btn-back" onClick={backToChats} aria-label="Back to chats">
+                  ←
+                </button>
                 <div className="avatar" style={{ background: activeChat.avatarBg }}>
                   {activeChat.initials}
                 </div>
@@ -202,6 +247,7 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
                     onClick={() => {
                       onStartChat(u.id);
                       setNewChatOpen(false);
+                      setMobileThreadOpen(true);
                     }}
                   >
                     <span className="avatar" style={{ background: avatarBg(u.id) }}>
