@@ -25,6 +25,7 @@ import {
   type WebChatMessage,
 } from "../lib/app-state";
 import { wptApi } from "../lib/api";
+import { buildSyncedContactsPath, isSyncedContactsPayload } from "../lib/synced-contacts";
 import { openWptSocket, wptEventFromMessage, type WptEvent } from "../lib/ws";
 import {
   clearOutboxStorage,
@@ -79,6 +80,9 @@ export function WebApp(): JSX.Element {
   // duration); a reloaded tab has no payload and marks those entries failed.
   const mediaPayloadRef = useRef<Map<string, string>>(new Map());
   const usersRef = useRef<ServerUser[]>([]);
+  // WEB-2.4 — the New Chat data source: server-matched synced contacts only.
+  // Nothing here ever came from a browser Contacts prompt.
+  const syncedContactsRef = useRef<ServerUser[]>([]);
   const groupsRef = useRef<ServerGroup[]>([]);
   const historyLoadedRef = useRef<Set<string>>(new Set());
   const inFlightRef = useRef(false);
@@ -174,6 +178,7 @@ export function WebApp(): JSX.Element {
     if (document.hidden) return;
     flushOutbox();
     loadRecentChats();
+    void loadSyncedContacts();
   }
 
   async function validateWebSession(token: string): Promise<void> {
@@ -214,6 +219,16 @@ export function WebApp(): JSX.Element {
   async function loadServerUsers(): Promise<void> {
     const r = await wptApi<ServerUser[]>("GET", "/api/users");
     if (r.ok && Array.isArray(r.body)) usersRef.current = r.body;
+  }
+
+  async function loadSyncedContacts(): Promise<void> {
+    const s = sessionRef.current;
+    if (!s || !s.webToken) return;
+    const r = await wptApi<{ ok: boolean; synced: ServerUser[] }>("GET", buildSyncedContactsPath(s.webToken));
+    if (r.ok && r.body && isSyncedContactsPayload(r.body)) {
+      syncedContactsRef.current = r.body.synced.map((c) => ({ id: c.id, name: c.name, role: c.role ?? "member" }));
+      bump();
+    }
   }
 
   async function loadServerGroups(): Promise<void> {
@@ -487,6 +502,7 @@ export function WebApp(): JSX.Element {
     setSocketOk(true);
     flushOutbox();
     loadRecentChats();
+    void loadSyncedContacts();
   }
 
   function handleWSClose(): void {
@@ -704,6 +720,7 @@ export function WebApp(): JSX.Element {
       }, OUTBOX_RETRY_MS);
     }
     void loadRecentChats();
+    void loadSyncedContacts();
     setPhase("linking");
     window.setTimeout(() => setPhase("chat"), 900);
   }
@@ -734,6 +751,7 @@ export function WebApp(): JSX.Element {
         }, OUTBOX_RETRY_MS);
       }
       void loadRecentChats();
+      void loadSyncedContacts();
     }
     return () => {
       mounted = false;
@@ -750,6 +768,7 @@ export function WebApp(): JSX.Element {
         state={stateRef.current}
         users={usersRef.current}
         groups={groupsRef.current}
+        synced={syncedContactsRef.current}
         socketOk={socketOk}
         peerTyping={peerTyping}
         onTyping={sendTyping}

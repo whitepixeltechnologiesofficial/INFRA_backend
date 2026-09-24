@@ -55,7 +55,7 @@ s.check("message bubbles carry sender labels + sent/delivered/read/failed status
 s.check("date dividers group the day", chatApp.includes("day-divider") && chatApp.includes("dayLabel"));
 s.check("in-chat search with highlight, count and prev/next nav", chatApp.includes("in-search") && /mark[^>]*className=["']hl/.test(chatApp) && chatApp.includes(" of ") && chatApp.includes("stepSearch"));
 s.check("composer has attach/voice/send with stamp", chatApp.includes("cm-btn") && chatApp.includes("🎤") && chatApp.includes("stamp"));
-s.check("new-chat panel distinguishes on-sealine vs not and no Contacts request", chatApp.includes("On Sealine") && chatApp.includes("not-on") && chatApp.includes("request its own Contacts permission"));
+s.check("new-chat panel shows synced-only list vs no-match and no Contacts request", chatApp.includes("Synced contacts") && chatApp.includes("not-on") && chatApp.includes("request its own Contacts permission"));
 s.check("group-info panel uses the /api/groups contract", chatApp.includes("GroupInfoPanel") && chatApp.includes("membersCanMessage") && types.includes("ServerGroup"));
 s.check("settings panel has theme, device, blocked + log-off", chatApp.includes("Theme") && chatApp.includes("This device") && chatApp.includes("Blocked contacts") && chatApp.includes("Log off this device"));
 s.check("blocked-contacts panel is present", chatApp.includes("BlockedPanel") && chatApp.includes("No blocked contacts on this device"));

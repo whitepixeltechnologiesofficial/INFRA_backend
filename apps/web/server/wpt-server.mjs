@@ -76,6 +76,16 @@ const reads = new Map();
 // Typing indicators (WEB-2.3): `${chatKey}:${typer}` -> TTL timer so a chat
 // can never stay stuck showing a typist who went quiet without sending.
 const typingTimers = new Map();
+// WEB-2.4 — synced-contacts registry: userId -> Set<matched server userIds.
+// Data source is the mobile app's address-book sync (PERM-2.16, hashes only);
+// the relay holds the server-side match outcome. The Web client never asks the
+// browser for Contacts — it only reads this list (GET /api/synced-contacts).
+const syncedContacts = new Map();
+// WEB-2.5 — registered numbers: e164 -> userId. Manual number entry in New
+// Chat checks this registry (server-side) and, for a well-formed but
+// unregistered number, the client shows a "not registered" state with NO
+// invite/share affordance (Web intentionally excludes the mobile invite flow).
+const registeredNumbers = new Map();
 const key = (a, b) => [a, b].sort().join(":");
 const groupKey = (g) => `group:${g}`;
 const user = (id) => users.find((u) => u.id === id);
@@ -327,6 +337,27 @@ function clearTypingTimer(key) {
     clearTimeout(t);
     typingTimers.delete(key);
   }
+}
+
+// WEB-2.4 — the matched users for an account: registered users whose number
+// resolved from the account's synced address book, minus the account itself.
+function resolveSyncedContacts(uid) {
+  const matched = syncedContacts.get(uid);
+  if (!matched) return [];
+  return users.filter((u) => u.id !== uid && matched.has(u.id));
+}
+
+// WEB-2.5 — server-side E.164 full-form normalizer, mirrors the client rule:
+// country code required, 8-15 digits, country code never starts with 0. Null
+// means malformed — the relay answers invalid_number BEFORE any registration
+// lookup, so a bad number can never masquerade as "not registered".
+function normalizeE164(raw) {
+  const cleaned = String(raw == null ? "" : raw).trim().replace(/[\s().-]+/g, "");
+  if (!/^\+[0-9]+$/.test(cleaned)) return null;
+  const digits = cleaned.slice(1);
+  if (digits.length < 8 || digits.length > 15) return null;
+  if (digits[0] === "0") return null;
+  return "+" + digits;
 }
 
 // TTL auto-clear: once a typer goes quiet without sending, broadcast typing:false
@@ -741,6 +772,42 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ── synced contacts (WEB-2.4) ──
+  // The New Chat panel's data source. Auth is the web session token; the list
+  // is server-matched only (never a browser Contacts permission prompt).
+  const syncedList = p.match(/^\/api\/synced-contacts\/([^/]+)$/);
+  if (syncedList && method === "GET") {
+    const s = webSessions.get(decodeURIComponent(syncedList[1]));
+    if (!s) {
+      sendJson(res, 401, { ok: false, error: "session_invalid" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, synced: resolveSyncedContacts(s.userId) });
+    return;
+  }
+
+  // ── manual number check (WEB-2.5) ──
+  // Format validation runs FIRST (400 invalid_number); only a well-formed
+  // number is looked up for registration. An unregistered number is
+  // `registered:false` — the client shows "not registered" and never an
+  // invite affordance.
+  if (p === "/api/contacts/check" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    const e164 = normalizeE164(body?.number);
+    if (!e164) {
+      sendJson(res, 400, { ok: false, error: "invalid_number", message: "That doesn't look like a phone number — include the country code." });
+      return;
+    }
+    const uid = registeredNumbers.get(e164);
+    const target = uid ? user(uid) : null;
+    if (!target) {
+      sendJson(res, 200, { ok: true, registered: false });
+      return;
+    }
+    sendJson(res, 200, { ok: true, registered: true, user: target });
+    return;
+  }
+
   // ── QA mock controls (simulate the phone; Web remains independent) ──
   const phoneStatus = p.match(/^\/api\/mock\/phone-status\/([^/]+)$/);
   if (phoneStatus && method === "GET") {
@@ -817,6 +884,54 @@ async function handleRequest(req, res) {
       ok: true,
       sessions: [...webSessions.values()].map((s) => ({ userId: s.userId, linkedAt: s.linkedAt })),
     });
+    return;
+  }
+  // WEB-2.4 — QA knob for the synced-contacts registry (stands in for the
+  // PERM-2.16 mobile sync landing its hashes; here `matched` is the resolved
+  // match outcome). Unknown ids are dropped; an empty array clears the list.
+  if (p === "/api/mock/sync-contacts" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    const uid = String(body?.userId || "mervin");
+    if (!user(uid)) {
+      sendJson(res, 404, { ok: false, error: "unknown_user" });
+      return;
+    }
+    const matched = Array.isArray(body?.matched)
+      ? [...new Set(body.matched.map(String).filter((id) => !!id && !!user(id)))]
+      : [];
+    syncedContacts.set(uid, new Set(matched));
+    sendJson(res, 200, { ok: true, synced: resolveSyncedContacts(uid) });
+    return;
+  }
+  // WEB-2.5 — QA knobs for the registered-numbers registry (stand-in for the
+  // account store that knows which numbers are on Sealine). The mock enforces
+  // the same E.164 rule, so a malformed number is rejected here too.
+  if (p === "/api/mock/register-number" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    const uid = String(body?.userId || "mervin");
+    const target = user(uid);
+    if (!target) {
+      sendJson(res, 404, { ok: false, error: "unknown_user" });
+      return;
+    }
+    const e164 = normalizeE164(body?.number);
+    if (!e164) {
+      sendJson(res, 400, { ok: false, error: "invalid_number" });
+      return;
+    }
+    registeredNumbers.set(e164, uid);
+    sendJson(res, 200, { ok: true, number: e164, user: target });
+    return;
+  }
+  if (p === "/api/mock/unregister-number" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    const e164 = normalizeE164(body?.number);
+    if (!e164) {
+      sendJson(res, 400, { ok: false, error: "invalid_number" });
+      return;
+    }
+    registeredNumbers.delete(e164);
+    sendJson(res, 200, { ok: true });
     return;
   }
 

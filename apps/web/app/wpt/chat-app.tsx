@@ -10,8 +10,22 @@ import type { WebSession } from "../lib/web-session";
 import type { ServerGroup, ServerUser } from "./types";
 import { avatarBg, initials } from "./web-app";
 import { applyTheme, readThemeMode, saveThemeMode, type ThemeMode } from "../lib/theme";
+import { wptApi } from "../lib/api";
 import { mediaUrl, validateAttachment, type ClientMediaAttachment } from "../lib/messages";
 import { buildSearchPattern, chooseMatchIndexes, splitHighlight, stepMatchIndex } from "../lib/search";
+import { EMPTY_SYNCED_CONTACTS_COPY, SYNCED_NO_MATCH_COPY, filterSyncedContacts } from "../lib/synced-contacts";
+import {
+  MANUAL_NUMBER_CHECK_ACTION,
+  MANUAL_NUMBER_LABEL,
+  MANUAL_NUMBER_PLACEHOLDER,
+  MANUAL_NUMBER_ROUTE,
+  NUMBER_CHECK_UNAVAILABLE_COPY,
+  NUMBER_FORMAT_ERROR_COPY,
+  NUMBER_NOT_REGISTERED_COPY,
+  isManualNumberCheckResponse,
+  normalizeToE164,
+  type ManualNumberCheckResponse,
+} from "../lib/manual-number";
 import { Seal } from "./seal";
 
 export interface ChatAppProps {
@@ -19,6 +33,9 @@ export interface ChatAppProps {
   state: WebAppStateV1;
   users: ServerUser[];
   groups: ServerGroup[];
+  // WEB-2.4 — server-matched synced contacts: the ONLY list the New Chat
+  // panel ever reads. Never populated from a browser Contacts API.
+  synced: ServerUser[];
   socketOk: boolean;
   // Live typing side-channel: which chats currently show the peer's typing row,
   // and the callback that announces the local user's own typing state.
@@ -231,16 +248,48 @@ function PanelHead(props: { title: string; onBack: () => void }): JSX.Element {
   );
 }
 
-function NewChatPanel(props: { users: ServerUser[]; meId: string; onStart: (id: string) => void; onClose: () => void }): JSX.Element {
-  const { users, meId, onStart, onClose } = props;
+function NewChatPanel(props: { synced: ServerUser[]; onStart: (id: string) => void; onClose: () => void }): JSX.Element {
+  const { synced, onStart, onClose } = props;
   const [q, setQ] = useState("");
-  const results = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const pool = users.filter((u) => u.id !== meId);
-    if (!needle) return pool;
-    return pool.filter((u) => u.name.toLowerCase().includes(needle) || u.id.toLowerCase().includes(needle));
-  }, [users, q, meId]);
+  // WEB-2.4 — the list is ALREADY the server match outcome; search only ever
+  // narrows that list. There is no all-users view and no Contacts prompt.
+  const results = useMemo(() => filterSyncedContacts(synced, q), [synced, q]);
   const noMatch = q.trim().length > 0 && results.length === 0;
+  // WEB-2.5 — manual number entry. Format is validated FIRST (format error for
+  // a malformed number, never a false "not registered"); a well-formed but
+  // unregistered number shows the not-registered state, and that state has NO
+  // invite/share affordance — Web intentionally excludes the mobile invite.
+  const [manualNumber, setManualNumber] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  function checkManualNumber(): void {
+    if (manualBusy) return;
+    const value = manualNumber.trim();
+    if (!normalizeToE164(value)) {
+      setManualError(NUMBER_FORMAT_ERROR_COPY);
+      return;
+    }
+    setManualBusy(true);
+    void (async () => {
+      const r = await wptApi<ManualNumberCheckResponse>("POST", MANUAL_NUMBER_ROUTE, { number: value });
+      setManualBusy(false);
+      if (!r.ok || !r.body) {
+        setManualError((r.body as ManualNumberCheckResponse | null)?.error === "invalid_number" ? NUMBER_FORMAT_ERROR_COPY : NUMBER_CHECK_UNAVAILABLE_COPY);
+        return;
+      }
+      if (!isManualNumberCheckResponse(r.body)) {
+        setManualError(NUMBER_CHECK_UNAVAILABLE_COPY);
+        return;
+      }
+      if (r.body.registered && r.body.user) {
+        onStart(r.body.user.id);
+        onClose();
+        return;
+      }
+      setManualError(NUMBER_NOT_REGISTERED_COPY);
+    })();
+  }
 
   return (
     <>
@@ -248,17 +297,49 @@ function NewChatPanel(props: { users: ServerUser[]; meId: string; onStart: (id: 
       <div className="pn-search">
         <input
           type="search"
-          placeholder="Search by name"
+          placeholder="Search your synced contacts"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          aria-label="Search people"
+          aria-label="Search synced contacts"
         />
       </div>
+      <div className="pn-manual">
+        <div className="sg-label">{MANUAL_NUMBER_LABEL}</div>
+        <div className="mn-row">
+          <input
+            type="tel"
+            inputMode="tel"
+            placeholder={MANUAL_NUMBER_PLACEHOLDER}
+            value={manualNumber}
+            onChange={(e) => setManualNumber(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                checkManualNumber();
+              }
+            }}
+            aria-label="Phone number"
+          />
+          <button type="button" className="mn-btn" onClick={checkManualNumber} disabled={manualBusy}>
+            {MANUAL_NUMBER_CHECK_ACTION}
+          </button>
+        </div>
+        {manualError ? (
+          <div className="mn-err" role="status">
+            {manualError}
+          </div>
+        ) : null}
+      </div>
       <div className="pn-scroll scrollbar">
-        <div className="sg-label">On Sealine</div>
-        {results.length === 0 && !noMatch ? (
+        <div className="sg-label">Synced contacts</div>
+        {synced.length === 0 ? (
           <div className="empty" style={{ padding: "20px 4px" }}>
-            No contacts synced yet. Chats you send and receive land here.
+            {EMPTY_SYNCED_CONTACTS_COPY}
+          </div>
+        ) : noMatch ? (
+          <div className="not-on">
+            <b className="mono">&ldquo;{q.trim()}&rdquo;</b>
+            <p>{SYNCED_NO_MATCH_COPY}</p>
           </div>
         ) : (
           results.map((u) => (
@@ -276,16 +357,10 @@ function NewChatPanel(props: { users: ServerUser[]; meId: string; onStart: (id: 
                 <b>{u.name}</b>
                 <small>{u.role}</small>
               </span>
-              <span className={cx("role-pill", u.id === meId && "me")}>{u.role}</span>
+              <span className={cx("role-pill")}>{u.role}</span>
             </button>
           ))
         )}
-        {noMatch ? (
-          <div className="not-on">
-            <b className="mono">“{q.trim()}”</b>
-            <p>This one isn&apos;t on Sealine yet. When they join, their synced number becomes a chat here automatically.</p>
-          </div>
-        ) : null}
         <div className="flag-note">
           This list mirrors the contacts already synced from your phone — <b>Web doesn&apos;t request its own Contacts permission.</b>
         </div>
@@ -441,7 +516,7 @@ function BlockedPanel(props: { onClose: () => void }): JSX.Element {
 }
 
 export function ChatApp(props: ChatAppProps): JSX.Element {
-  const { session, state, users, groups, socketOk, peerTyping, onTyping, onSelectChat, onSendMessage, onSendMedia, onStartChat, onLogout } = props;
+  const { session, state, users, groups, synced, socketOk, peerTyping, onTyping, onSelectChat, onSendMessage, onSendMedia, onStartChat, onLogout } = props;
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [panel, setPanel] = useState<PanelKey | null>(null);
@@ -917,7 +992,7 @@ export function ChatApp(props: ChatAppProps): JSX.Element {
       {panel !== null ? (
         <div className="panel-backdrop" onClick={() => setPanel(null)}>
           <div className="panel" onClick={(e) => e.stopPropagation()}>
-            {panel === "new-chat" ? <NewChatPanel users={users} meId={session.userId} onStart={onStartChat} onClose={() => setPanel(null)} /> : null}
+            {panel === "new-chat" ? <NewChatPanel synced={synced} onStart={onStartChat} onClose={() => setPanel(null)} /> : null}
             {panel === "group-info" && activeChat ? <GroupInfoPanel chat={activeChat} group={group} meId={session.userId} onClose={() => setPanel(null)} /> : null}
             {panel === "settings" ? (
               <SettingsPanel
