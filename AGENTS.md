@@ -889,4 +889,70 @@ full chain 366/366 (web-13..web-17, e2e, web-21, web-22, web-23) + `pnpm lint` +
 - **Harness** — `scripts/web-23-verify.js` (port 3944, `typingTtlMs:400`): imports realtime.ts + receipts.ts +
   search.ts as real TS; live sent->delivered->read via broadcasts (direct + group), all rejections, explicit+TTL
   typing clears, 57-message thread searched with escaped metacharacters, terminal failed. Appended to `pnpm verify`.
-- **Pending manual**: message reaching "read" on a physical device; BE-5.5 backend endpoints + route repoint.
+- **Pending manual**: message reaching "read" on a physical device; the Web client route repoint onto the BE-5.5
+  backend endpoints (the wire shape is already verified unchanged, the repoint itself remains).
+
+### BE-5.5 — Backend read receipts + typing endpoints (VERIFIED, uncommitted)
+
+The wpt-server reciept/typing side-channel now has a first-class backend implementation in `@wpt/backend` speaking
+the SAME canonical wire contract the Web client already uses (client helpers + wire bodies unchanged, cross-verified):
+
+- **Pure core** — `apps/backend/src/messages/realtime.ts` (erasable-only TS, Node-verifiable): `resolveReadThrough`
+  (direct: peer-authored rows `m.from === to` up to messageId; group: non-reporter rows), `applyRead` (read-through +
+  broadcast with rooms `dm:`/`group:` + member `user:` rooms; rejections `bad_read` 400, `read_not_found` 404,
+  `not_member` 403, `user_not_found` 404), and `createTypingController` (server-wide timers keyed `dm:from:to` /
+  `group:gid:from`, typing:true re-arms TTL, explicit false clears only if a timer exists, TTL auto-clear broadcasts
+  typing:false; TTL from shared `TYPING_TTL_MS`, env-override `TYPING_TTL_MS`; events carry `kind`).
+- **Provider bottle** — `apps/backend/src/messages/providers.ts`: seams for user/group/thread lookups + broadcast;
+  defaults use the DB (users/group_members, lazy import) and empty threads (backend stores E2E-ciphered per-device
+  relay rows, so sender logical web message ids can't be enumerated — broadcasts carry the furthest `messageId`
+  which the existing client handler already resolves as a single-id read-through); `overrideProviders`/`bindIo` for
+  tests.
+- **Express routes** — `apps/backend/src/routes/messages.ts`: `POST /api/messages/read` + `POST /api/messages/typing`
+  under `requireAuth`; sender identity comes from the JWT `auth.sub` (a body `from` differing from it → 403
+  `from_mismatch`); wires realtime broadcast to socket.io `realtime` channel. Mounted in `src/index.ts` at `/api`
+  (exact client paths), sockets join `user:<userId>` on connect, `bindIo(io)` registered.
+- **Harness** — `apps/backend/src/messages/be-5-5-verify.ts` (`pnpm --filter @wpt/backend run verify:be55`),
+  **53/53 PASS buildable**, DB-free: pure-core read/typing/TTL + rejection matrix, wire-body parity by runtime-importing
+  the REAL `apps/web/app/lib/receipts.ts` helpers (buildReadRequest/nextMessageStatus/applyReadReceipt via non-static
+  import so the backend tsc rootDir sees no web file), and autonomous HTTP over the mounted router (JWT-minted tokens,
+  fake socket.io recorder → asserts `user:u2` room delivery, messageIds, 401 MISSING_TOKEN, 403 from_mismatch,
+  typing on/off + TTL auto-clear). `eslint` clean on the new files; backend `tsc --noEmit` clean (the PRE-EXISTING
+  team-alpha `src/utils/phone-hash.ts`/`phone-normalize.ts` `libphonenumber-js` errors were fixed: the missing dep
+  was added to `apps/backend` deps (`libphonenumber-js@^1.13.11`, matching mobile) and the type-as-value
+  `CountryCode` import in `phone-normalize.ts` was split to a type-only import; runtime verified via tsx —
+  IN/US normalization, stable hashing, invalid->null).
+- **Pending**: Web client repoint of the two REST writers onto the backend endpoints (wire already identical —
+  harness proves the exact buildReadRequest/typing bodies round-trip); physical-device receipt retest.
+
+### WEB 2.5 — Manual Number Entry, No Invite Option (VERIFIED, uncommitted)
+
+Mobile-parity edge on the live relay (pps/web Next.js client + server/wpt-server.mjs). Entering an
+unregistered phone number in New Chat shows a "not registered" message and NOTHING else — no invite/share/
+referral affordance anywhere on Web (locked Section-5 decision; the mobile invite flow is intentionally excluded).
+Verified via 
+ode scripts/web-25-verify.js (**49/49**); full web chain 415/415 (web-13..17, e2e, web-21..25) +
+source-lint (37 files clean) + 	sc --noEmit green.
+
+- **Pure contract** — pps/web/app/lib/manual-number.ts (erasable-only TS, Node-importable): 
+ormalizeToE164(raw)
+  E.164 full-form rule (country code required — no trusted device country on a linked browser; + + 8-15 digits,
+  no leading 0, strips spaces/dashes/parens/dots; malformed -> null), MANUAL_NUMBER_ROUTE = "/api/contacts/check",
+  invite-free copy constants (NUMBER_FORMAT_ERROR_COPY, NUMBER_NOT_REGISTERED_COPY = "try again once they've
+  joined"), isManualNumberCheckResponse shape guard.
+- **Format beats registration (the card's edge case):** validation runs FIRST on both client and server. Malformed
+  input -> 400 invalid_number on the wire and the format-error copy in the UI — a bad number can NEVER be reported
+  as "not registered", even when its normalized twin IS registered (harness proves the 14155552671 case).
+- **Server** — egisteredNumbers Map (e164 -> userId; stand-in for the account store, same deal as the WEB-2.4
+  synced registry): POST /api/contacts/check (400 invalid_number before any lookup; 200 {ok,registered:false}
+  for well-formed unregistered; 200 {ok,registered:true,user} when matched), QA knobs POST /api/mock/register-number
+  + /api/mock/unregister-number (both enforce the same E.164 rule).
+- **Client** — NewChatPanel adds a manual number section (	ype="tel" / inputMode="tel" + Check button, Enter
+  submits): malformed -> format error immediately (no fetch); well-formed -> POST check; registered -> onStart(user.id)
+  + close; unregistered -> the no-invite not-registered state; relay/unparseable -> friendly unavailable copy.
+  .pn-manual/.mn-row/.mn-btn/.mn-err styles added to pps/web/app/globals.css.
+- **Zero-invite hygiene asserted**: scan proves no invite/share affordance token (inviteToken/inviteLink/shareLink/
+  /api/invite/navigator.share/clipboard/etc.) in any client source or the server; both wire bodies carry only
+  ok/registered/user/error — the not-registered state literally has nothing else the UI could offer.
+- **Pending**: flag completion to Samson for explicit scope re-confirmation (no-invite) before merge; WEB-2.4/2.5
+  data sources remain relay mock registries until PERM-2.16 backend contact_hashes plumbing lands (Sprint 4).

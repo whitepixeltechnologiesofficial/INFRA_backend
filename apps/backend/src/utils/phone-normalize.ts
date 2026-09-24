@@ -11,7 +11,8 @@
  *   normalizePhoneNumber("+1 (415) 555-0123")   → "+14155550123"
  */
 
-import { parsePhoneNumber, CountryCode } from "libphonenumber-js";
+import { parsePhoneNumber } from "libphonenumber-js";
+import type { CountryCode } from "libphonenumber-js";
 
 /**
  * Normalize a phone number to E.164 format using libphonenumber.

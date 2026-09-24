@@ -8,6 +8,8 @@ import { API_VERSION, SOCKET_NAMESPACE } from "@wpt/shared";
 import onboardingRoutes from "./routes/onboarding.js";
 import profileRoutes from "./routes/profile.js";
 import pushRoutes from "./routes/push.js";
+import messagesRoutes from "./routes/messages.js";
+import { bindIo } from "./messages/providers.js";
 import {
   initSocketRegistry,
   registerSocket,
@@ -45,6 +47,10 @@ app.use(`/api/${API_VERSION}/onboarding`, onboardingRoutes);
 app.use(`/api/${API_VERSION}/profile`, profileRoutes);
 app.use(`/api/${API_VERSION}/push`, pushRoutes);
 
+// BE-5.5 — realtime side-channel endpoints at the canonical client contract
+// (/api/messages/read, /api/messages/typing from packages/shared/realtime.ts).
+app.use("/api", messagesRoutes);
+
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
@@ -52,6 +58,7 @@ const io = new Server(httpServer, {
 });
 
 initSocketRegistry(io);
+bindIo(io);
 
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token as string | undefined;
@@ -80,6 +87,10 @@ io.on("connection", (socket) => {
   const deviceId = socket.handshake.auth?.deviceId as string;
 
   registerSocket(socket, userId, deviceId);
+
+  // BE-5.5 — join the per-user room so realtime broadcasts (read receipts,
+  // typing indicators) reach every device of the user via `user:<id>`.
+  socket.join(`user:${userId}`);
 
   socket.on("disconnect", () => {
     unregisterSocket(socket, userId);

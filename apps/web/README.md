@@ -136,8 +136,12 @@ server-side auto-clear, and in-chat search across a 50+ message thread.
   explicit typing clear + TTL auto-clear, a 57-message thread searched with
   escaped metacharacters, and the terminal `failed` state. Appended to `pnpm
   verify` (chain: R1.3–R1.8 + E2E + WEB 2.1–2.3 = 366 checks).
-- **BE-5.5 swap path** — point the read/typing POSTs at the backend relay when
-  it ships the read-receipt + typing endpoints; the wire shape and client
+- **BE-5.5 swap path** — the backend now ships the read-receipt + typing
+  endpoints (`apps/backend/src/routes/messages.ts` → `POST /api/messages/read`
+  and `POST /api/messages/typing`, JWT-authed, socket.io `realtime` broadcasts
+  to `user:<id>`/`dm:`/`group:` rooms; verified by the backend harness
+  `pnpm --filter @wpt/backend run verify:be55`, 53/53). Repoint the read/typing
+  POSTs at the backend relay to complete the swap; the wire shape and client
   helpers are unchanged. **Mobile receipt retest (pending)**: confirm a message
   sent from the Web goes sent → delivered → read on a physical device.
 
