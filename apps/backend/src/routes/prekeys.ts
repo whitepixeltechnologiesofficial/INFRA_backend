@@ -1,7 +1,7 @@
 /**
  * BE-5.2: Prekey distribution routes (X3DH).
  *
- *   PUT  /prekeys/upload            publish signed prekey and/or one-time prekeys
+ *   POST /prekeys/upload            publish identity key, signing key, signed prekey and/or one-time prekeys
  *   GET  /prekeys/count             how many unused one-time prekeys I have left
  *   GET  /prekeys/bundle/:deviceId  fetch a device's prekey bundle
  *
@@ -9,6 +9,11 @@
  * left, the bundle is still returned WITHOUT oneTimePreKey. x3dh.ts
  * already handles this (dh4 is skipped), so key exchange still works,
  * with slightly weaker replay protection. It never fails outright.
+ *
+ * IDENTITY KEY: onboarding stores a placeholder ("pf_<deviceId>") in
+ * devices.identity_public_key. A device uploads its real identity key
+ * once; after that it can never be changed. No bundle is served while
+ * the placeholder is still in place.
  *
  * All keys are base64. X25519 and Ed25519 public keys are 32 bytes,
  * Ed25519 signatures are 64 bytes.
@@ -31,6 +36,11 @@ export const LOW_PREKEY_THRESHOLD = 10;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Onboarding stores "pf_<deviceId>" until the device uploads its real identity key. */
+function isPlaceholderIdentityKey(k: string): boolean {
+  return k.startsWith("pf_");
+}
+
 /** True if v is canonical base64 that decodes to exactly `bytes` bytes. */
 function isBase64OfLength(v: unknown, bytes: number): v is string {
   if (typeof v !== "string") return false;
@@ -43,7 +53,11 @@ async function resolveOwnDevice(userId: string, deviceId: string) {
   if (!UUID_RE.test(deviceId)) return null;
   const db = getDb();
   const [row] = await db
-    .select({ id: devices.id, signingPublicKey: devices.signingPublicKey })
+    .select({
+      id: devices.id,
+      identityPublicKey: devices.identityPublicKey,
+      signingPublicKey: devices.signingPublicKey,
+    })
     .from(devices)
     .where(
       and(
@@ -66,13 +80,14 @@ async function countUnclaimed(deviceId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-// PUT /prekeys/upload
+// POST /prekeys/upload
 // Body: {
+//   identityKey?: string,
 //   signingPublicKey?: string,
 //   signedPreKey?: { publicKey: string, signature: string },
 //   oneTimePreKeys?: string[]
 // }
-router.put("/upload", async (req: Request, res: Response) => {
+router.post("/upload", async (req: Request, res: Response) => {
   try {
     const auth = res.locals.auth!;
     const device = await resolveOwnDevice(auth.sub, auth.deviceId);
@@ -81,15 +96,40 @@ router.put("/upload", async (req: Request, res: Response) => {
       return;
     }
 
-    const { signingPublicKey, signedPreKey, oneTimePreKeys: otpInput } = req.body as {
+    const {
+      identityKey,
+      signingPublicKey,
+      signedPreKey,
+      oneTimePreKeys: otpInput,
+    } = req.body as {
+      identityKey?: unknown;
       signingPublicKey?: unknown;
       signedPreKey?: { publicKey?: unknown; signature?: unknown };
       oneTimePreKeys?: unknown;
     };
 
-    if (signedPreKey === undefined && otpInput === undefined) {
+    if (
+      signedPreKey === undefined &&
+      otpInput === undefined &&
+      identityKey === undefined &&
+      signingPublicKey === undefined
+    ) {
       res.status(400).json({ error: "NOTHING_TO_UPLOAD" });
       return;
+    }
+
+    if (identityKey !== undefined) {
+      if (!isBase64OfLength(identityKey, 32)) {
+        res.status(400).json({ error: "INVALID_IDENTITY_KEY" });
+        return;
+      }
+      if (
+        !isPlaceholderIdentityKey(device.identityPublicKey) &&
+        device.identityPublicKey !== identityKey
+      ) {
+        res.status(409).json({ error: "IDENTITY_KEY_MISMATCH" });
+        return;
+      }
     }
 
     if (signingPublicKey !== undefined) {
@@ -105,6 +145,7 @@ router.put("/upload", async (req: Request, res: Response) => {
 
     if (signedPreKey !== undefined) {
       if (
+        !signedPreKey ||
         !isBase64OfLength(signedPreKey.publicKey, 32) ||
         !isBase64OfLength(signedPreKey.signature, 64)
       ) {
@@ -113,6 +154,10 @@ router.put("/upload", async (req: Request, res: Response) => {
       }
       if (!device.signingPublicKey && signingPublicKey === undefined) {
         res.status(400).json({ error: "SIGNING_KEY_REQUIRED" });
+        return;
+      }
+      if (isPlaceholderIdentityKey(device.identityPublicKey) && identityKey === undefined) {
+        res.status(400).json({ error: "IDENTITY_KEY_REQUIRED" });
         return;
       }
     }
@@ -133,6 +178,12 @@ router.put("/upload", async (req: Request, res: Response) => {
 
     const db = getDb();
     await db.transaction(async (tx) => {
+      if (typeof identityKey === "string" && isPlaceholderIdentityKey(device.identityPublicKey)) {
+        await tx
+          .update(devices)
+          .set({ identityPublicKey: identityKey })
+          .where(eq(devices.id, device.id));
+      }
       if (typeof signingPublicKey === "string" && !device.signingPublicKey) {
         await tx.update(devices).set({ signingPublicKey }).where(eq(devices.id, device.id));
       }
@@ -204,7 +255,11 @@ router.get("/bundle/:deviceId", async (req: Request, res: Response) => {
       .where(and(eq(devices.id, targetId), eq(devices.isActive, true), isNull(devices.revokedAt)))
       .limit(1);
 
-    if (!device || !device.signingPublicKey) {
+    if (
+      !device ||
+      !device.signingPublicKey ||
+      isPlaceholderIdentityKey(device.identityPublicKey)
+    ) {
       res.status(404).json({ error: "BUNDLE_NOT_AVAILABLE" });
       return;
     }
