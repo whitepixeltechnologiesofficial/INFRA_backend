@@ -11,6 +11,7 @@ import blocksRoutes from "./routes/blocks.js";
 import reportsRoutes from "./routes/reports.js";
 import moderationRoutes from "./routes/moderation.js";
 import relayRoutes from "./routes/relay.js";
+import prekeysRoutes from "./routes/prekeys.js";
 import {
   initSocketRegistry,
   registerSocket,
@@ -65,6 +66,7 @@ export function createApp(): BackendServer {
   app.use(`/api/${API_VERSION}/reports`, reportsRoutes);
   app.use(`/api/${API_VERSION}/moderation`, moderationRoutes);
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
+  app.use(`/api/${API_VERSION}/prekeys`, prekeysRoutes);
 
   const httpServer = createServer(app);
 
