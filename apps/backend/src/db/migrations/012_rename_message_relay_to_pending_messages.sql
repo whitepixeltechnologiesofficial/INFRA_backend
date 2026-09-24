@@ -155,15 +155,47 @@ COMMIT;
 -- ROLLBACK (manual "down" — the repo has no _down file convention).
 -- Uncomment everything below and run to exactly reverse this
 -- migration, restoring message_relay. Rows are preserved throughout.
--- Exact mirror of the up path: no DROP FUNCTION, no ALTER TRIGGER
--- ... EXECUTE FUNCTION.
+-- No DROP FUNCTION, no ALTER TRIGGER ... EXECUTE FUNCTION.
+--
+-- ORDER MATTERS: the table is renamed back FIRST. The cleanup function
+-- is LANGUAGE sql, so Postgres validates its body when it is created;
+-- rewriting it to reference message_relay before the table has been
+-- renamed back fails with: relation "public.message_relay" does not
+-- exist. Tested on a test database: 3 rows preserved in both directions.
 -- ============================================================
 -- BEGIN;
 --
--- -- 1. Rename the new functions back and restore the old cleanup body
--- --    referencing message_relay (purge-storage body is unchanged)
+-- -- 1. Table back first (rows preserved)
+-- ALTER TABLE public.pending_messages RENAME TO message_relay;
+--
+-- -- 2. Constraints back: 5 FK, 3 CHECK, 1 PK
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_reply_to_fkey TO message_relay_reply_to_fkey;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_sender_device_id_devices_id_fk TO message_relay_sender_device_id_devices_id_fk;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_recipient_device_id_devices_id_fk TO message_relay_recipient_device_id_devices_id_fk;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_recipient_user_id_users_id_fk TO message_relay_recipient_user_id_users_id_fk;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_recipient_group_id_groups_id_fk TO message_relay_recipient_group_id_groups_id_fk;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_recipient_exactly_one TO message_relay_recipient_exactly_one;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_size_bytes_non_negative TO message_relay_size_bytes_non_negative;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_message_type_check TO message_relay_message_type_check;
+-- ALTER TABLE public.message_relay RENAME CONSTRAINT pending_messages_pkey TO message_relay_pkey;
+--
+-- -- 3. Indexes back (6)
+-- ALTER INDEX public.idx_pending_messages_recipient_user   RENAME TO idx_message_relay_recipient_user;
+-- ALTER INDEX public.idx_pending_messages_recipient_device RENAME TO idx_message_relay_recipient_device;
+-- ALTER INDEX public.idx_pending_messages_recipient_group  RENAME TO idx_message_relay_recipient_group;
+-- ALTER INDEX public.idx_pending_messages_expires          RENAME TO idx_message_relay_expires;
+-- ALTER INDEX public.idx_pending_messages_created          RENAME TO idx_message_relay_created;
+-- ALTER INDEX public.idx_pending_messages_voice_group      RENAME TO idx_message_relay_voice_group;
+--
+-- -- 4. Trigger back
+-- ALTER TRIGGER trg_pending_messages_purge_storage ON public.message_relay
+--     RENAME TO trg_message_relay_purge_storage;
+--
+-- -- 5. Functions back, then restore the old cleanup body
 -- ALTER FUNCTION public.cleanup_pending_messages()
 --     RENAME TO cleanup_message_relay;
+-- ALTER FUNCTION public.tg_pending_messages_purge_storage()
+--     RENAME TO tg_message_relay_purge_storage;
 --
 -- CREATE OR REPLACE FUNCTION public.cleanup_message_relay()
 -- RETURNS void
@@ -171,11 +203,7 @@ COMMIT;
 -- AS $$ DELETE FROM public.message_relay
 --      WHERE delivered_at IS NOT NULL OR expires_at < now(); $$;
 --
--- ALTER FUNCTION public.tg_pending_messages_purge_storage()
---     RENAME TO tg_message_relay_purge_storage;
---
--- -- 2. Cron: drop the new job (guarded) and restore the old one, calling
--- --    cleanup_message_relay
+-- -- 6. Cron back: drop the new job (guarded) and restore the old one
 -- DO $$
 -- BEGIN
 --     IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup-pending-messages')
@@ -191,34 +219,8 @@ COMMIT;
 --     $$ SELECT public.cleanup_message_relay(); $$
 -- );
 --
--- -- 3. Restore the trigger name (function rename followed it automatically)
--- ALTER TRIGGER trg_pending_messages_purge_storage ON public.pending_messages
---     RENAME TO trg_message_relay_purge_storage;
---
--- -- 4. Comment back to the 009:72 text
--- COMMENT ON TABLE public.pending_messages IS
+-- -- 7. Comment back to the 009:72 text
+-- COMMENT ON TABLE public.message_relay IS
 --     'Message queue per recipient device. Tech Arch S6.4 calls this pending_messages; message_relay is the implemented table. Deleting a row also removes its media_path object from Storage (S11.4).';
---
--- -- 5. Indexes back (6)
--- ALTER INDEX public.idx_pending_messages_recipient_user   RENAME TO idx_message_relay_recipient_user;
--- ALTER INDEX public.idx_pending_messages_recipient_device RENAME TO idx_message_relay_recipient_device;
--- ALTER INDEX public.idx_pending_messages_recipient_group  RENAME TO idx_message_relay_recipient_group;
--- ALTER INDEX public.idx_pending_messages_expires          RENAME TO idx_message_relay_expires;
--- ALTER INDEX public.idx_pending_messages_created          RENAME TO idx_message_relay_created;
--- ALTER INDEX public.idx_pending_messages_voice_group      RENAME TO idx_message_relay_voice_group;
---
--- -- 6. Constraints back: 5 FK, 3 CHECK, 1 PK
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_reply_to_fkey TO message_relay_reply_to_fkey;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_sender_device_id_devices_id_fk TO message_relay_sender_device_id_devices_id_fk;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_recipient_device_id_devices_id_fk TO message_relay_recipient_device_id_devices_id_fk;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_recipient_user_id_users_id_fk TO message_relay_recipient_user_id_users_id_fk;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_recipient_group_id_groups_id_fk TO message_relay_recipient_group_id_groups_id_fk;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_recipient_exactly_one TO message_relay_recipient_exactly_one;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_size_bytes_non_negative TO message_relay_size_bytes_non_negative;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_message_type_check TO message_relay_message_type_check;
--- ALTER TABLE public.pending_messages RENAME CONSTRAINT pending_messages_pkey TO message_relay_pkey;
---
--- -- 7. Table back to message_relay (rows preserved)
--- ALTER TABLE public.pending_messages RENAME TO message_relay;
 --
 -- COMMIT;
