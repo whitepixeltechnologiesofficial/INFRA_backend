@@ -171,8 +171,8 @@ async function executeHandoffTransaction({
       }
     }
 
-    // Ensure a matching device row exists so relay/send (sender_device_id
-    // uuid FK) works with the device id minted for this session.
+    // Ensure a matching device row exists so relay/send (pending_messages
+    // sender_device_id uuid FK) works with the device id minted for this session.
     await tx
       .insert(devices)
       .values({
@@ -541,7 +541,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
     }
 
     // devices.id is a uuid column — coerce arbitrary client device ids to a
-    // uuid so the handoff can bind relay/send (FK on sender_device_id).
+    // uuid so the handoff can bind relay/send (FK on pending_messages.sender_device_id).
     const clientDeviceId = deviceInfo.deviceId;
     const deviceId =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientDeviceId)

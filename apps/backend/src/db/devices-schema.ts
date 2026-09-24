@@ -1,7 +1,7 @@
 /**
  * DB-2.2 — Devices table.
  *
- * One row per registered device for a user. The message_relay
+ * One row per registered device for a user. The pending_messages
  * per-device fan-out uses this table to resolve which devices
  * should receive a message.
  */
