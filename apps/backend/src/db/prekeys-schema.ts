@@ -1,16 +1,18 @@
 /**
- * BE-5.2: Prekey tables for X3DH key distribution.
+ * BE-5.2: Drizzle definitions for the prekey tables.
  *
- * signed_prekeys: one current signed prekey per device (older ones are
- * kept with replaced_at set, so they can be phased out later).
- * one_time_prekeys: a stack of single-use keys per device. A key is
- * handed out at most once (claimed_at is set when it is given away).
+ * These tables ALREADY EXIST in the database (created by the earlier
+ * ENC-4.1 work, 006_prekey_tables.sql on origin/enc/prekey-bundle) and
+ * hold live rows. This file only describes them; BE-5.2 does not
+ * create, alter or drop them.
  *
- * Keys are stored as text, matching devices.identity_public_key.
+ * signed_prekeys: many per device; the CURRENT one is the highest key_id.
+ * one_time_prekeys: consumed_at is set when a key is handed out.
+ * A database CHECK requires public keys and signatures to be base64
+ * strings of 40-128 characters.
  */
 
-import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, integer, timestamp, unique } from "drizzle-orm/pg-core";
 import { devices } from "./devices-schema.js";
 
 export const signedPrekeys = pgTable(
@@ -20,18 +22,12 @@ export const signedPrekeys = pgTable(
     deviceId: uuid("device_id")
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
+    keyId: integer("key_id").notNull(),
     publicKey: text("public_key").notNull(),
     signature: text("signature").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    replacedAt: timestamp("replaced_at", { withTimezone: true }),
   },
-  (table) => [
-    index("signed_prekeys_device_id_idx").on(table.deviceId),
-    // Only one current (not replaced) signed prekey per device.
-    uniqueIndex("signed_prekeys_one_current_per_device_idx")
-      .on(table.deviceId)
-      .where(sql`${table.replacedAt} is null`),
-  ],
+  (table) => [unique("signed_prekeys_device_key_unique").on(table.deviceId, table.keyId)],
 );
 
 export const oneTimePrekeys = pgTable(
@@ -41,12 +37,10 @@ export const oneTimePrekeys = pgTable(
     deviceId: uuid("device_id")
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
+    keyId: integer("key_id").notNull(),
     publicKey: text("public_key").notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    claimedAt: timestamp("claimed_at", { withTimezone: true }),
   },
-  (table) => [
-    index("one_time_prekeys_device_claimed_idx").on(table.deviceId, table.claimedAt),
-    uniqueIndex("one_time_prekeys_device_key_idx").on(table.deviceId, table.publicKey),
-  ],
+  (table) => [unique("one_time_prekeys_device_key_unique").on(table.deviceId, table.keyId)],
 );
