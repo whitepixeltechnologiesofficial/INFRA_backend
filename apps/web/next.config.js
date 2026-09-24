@@ -9,6 +9,17 @@ const nextConfig = {
   // monorepo root ESLint config is unrelated to this app and doesn't resolve
   // its plugins here, so Next's built-in lint pass is disabled.
   eslint: { ignoreDuringBuilds: true },
+  // @wpt/shared re-exports its TS modules with Node-ESM ".js" specifiers
+  // (correct for tsc/Bundler, tsx and future Node type-stripping). webpack
+  // resolves those requests literally, so alias ".js" back into the actual
+  // ".ts" sources that Next compiles via transpilePackages.
+  webpack: (config) => {
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias || {}),
+      ".js": [".ts", ".js"],
+    };
+    return config;
+  },
 };
 
 export default nextConfig;

@@ -24,9 +24,10 @@ export function httpWait(port) {
   });
 }
 
-export function startServer(port, { qrTtlMs } = {}) {
+export function startServer(port, { qrTtlMs, typingTtlMs } = {}) {
   const env = { ...process.env, PORT: String(port) };
   if (qrTtlMs != null) env.QR_TTL_MS = String(qrTtlMs);
+  if (typingTtlMs != null) env.TYPING_TTL_MS = String(typingTtlMs);
   const child = spawn(process.execPath, ["server/wpt-server.mjs"], { cwd: APP_ROOT, env, stdio: ["ignore", "ignore", "inherit"] });
   return { child, ready: httpWait(port) };
 }

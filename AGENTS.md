@@ -861,3 +861,32 @@ local URL/QR security behavior:
   78/78, qr-scan-verify 95/95, onb-11-verify 60/60, protected-route-verify 82/82, permission-tasks-verify 36/36,
   perm-tasks-1-15-verify 198/198, onb-17-verify 36/36, onb-17-backend-mode 13/13 (508 total). Untracked
   `docs/*.pdf` untouched.
+
+### WEB 2.3 — Read receipts + typing indicators + in-thread search (VERIFIED, uncommitted)
+
+Mobile-parity delivery on the live relay (`apps/web` Next.js client + `server/wpt-server.mjs`). Client socket stays
+receive-only; both side channels are additive REST POSTs. All verified via `node scripts/web-23-verify.js` (89/89);
+full chain 366/366 (web-13..web-17, e2e, web-21, web-22, web-23) + `pnpm lint` + `tsc --noEmit` + `next build` green.
+
+- **Four-state machine** — `apps/web/app/lib/receipts.ts` (pure, erasable-only TS): `sent -> delivered -> read`
+  plus terminal `failed`. `nextMessageStatus(current, event)` with events `echo|read|rejected`; `failed` never
+  resurrects; `read` never downgrades. `applyReadReceipt(list, ids, meId)` elevates only the reader's outbound rows;
+  `buildReadRequest({from,isGroup,to|groupId,messageId})`; `lastPeerMessage(list, meId)` = read-through point on open.
+- **Shared canonical timing** — `packages/shared/src/realtime.ts`: `TYPING_TTL_MS=5000`, `TYPING_DISPLAY_MS=2500`,
+  `READ_ROUTE="/api/messages/read"`, `TYPING_ROUTE="/api/messages/typing"` (exported from shared index). Server pins
+  `TYPING_TTL` (env override `TYPING_TTL_MS`); client ceiling 2500ms.
+- **Server routes (additive)** — `POST /api/messages/read`: read-through to `messageId`, resolves peer rows to that
+  point (direct: rows `m.from === to`; group: rows from other members), 400 `bad_read` / 404 `read_not_found` /
+  403 `not_member`; broadcasts `{type:"read", from, to|groupId, messageId, messageIds, at}` to dm/group + member
+  user rooms. `POST /api/messages/typing`: `{from, type, to|groupId, typing}`, per-pair timer keyed
+  `to:from` / `groupId:from`, explicit false only broadcasts if a timer exists, TTL auto-clear broadcasts
+  `typing:false` for a quiet typist; broadcasts carry `kind`. Text-send wire unchanged.
+- **Client** — `web-app.tsx`: `peerTyping` map, `reportRead`/`announceTyping` REST writers, `onReadReceipt`/
+  `onTypingEvent` socket handlers, read-through on open + on-inbound-while-open, `finalizeEcho` uses the shared
+  machine. `chat-app.tsx`: typing row (`.typing`/`.typing-dot`) when `peerTyping[activeChat.id]`, 2s draft heartbeat,
+  stop-on-send/switch, shared `search.ts` (escapeRegExp/buildSearchPattern/chooseMatchIndexes/splitHighlight/
+  stepMatchIndex) replacing hand-rolled escaping.
+- **Harness** — `scripts/web-23-verify.js` (port 3944, `typingTtlMs:400`): imports realtime.ts + receipts.ts +
+  search.ts as real TS; live sent->delivered->read via broadcasts (direct + group), all rejections, explicit+TTL
+  typing clears, 57-message thread searched with escaped metacharacters, terminal failed. Appended to `pnpm verify`.
+- **Pending manual**: message reaching "read" on a physical device; BE-5.5 backend endpoints + route repoint.

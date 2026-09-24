@@ -17,6 +17,23 @@ import QRCode from "./vendor/QRCode/index.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 const TTL = Number(process.env.QR_TTL_MS) || 60000;
+// Typing-indicator ceiling (WEB-2.3). The server re-arms a timer on every
+// typing:true and broadcasts typing:false shortly after the last one, so a chat
+// never stays stuck on a typist who went quiet without sending. Harnesses
+// override this (TYPING_TTL_MS) to prove the auto-clear without waiting 5s.
+const TYPING_TTL = Number(process.env.TYPING_TTL_MS) || 5000;
+
+// Message-send parity (text / image / voice). Canonical source of these
+// numbers is packages/shared/src/messages.ts; scripts/web-22-verify.js pins
+// them to the shared constants so they can't drift, and the Next.js client
+// enforces the same cap from @wpt/shared at compose time.
+const MESSAGE_KINDS = ["text", "image", "voice"];
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MiB, one limit shared by image + voice
+const MIN_VOICE_SECONDS = 1;
+const MAX_TEXT_LENGTH = 4000;
+// readBody ceiling: 100 MiB of attachment base64 + JSON overhead. Anything
+// larger is rejected as payload_too_large without being buffered to completion.
+const MAX_REQUEST_BYTES = 150 * 1024 * 1024;
 
 const users = [
   { id: "mervin", name: "Mervin Roger", role: "owner" },
@@ -47,12 +64,46 @@ const groups = [
 ];
 const messages = new Map();
 const onlineUsers = new Set();
+// Media attachments by id (image / voice payloads). Bytes are kept here only —
+// message metadata (mKind/attachmentId/mimeType/sizeBytes) is what's stored or
+// broadcast; the client never persists the payload itself.
+const attachments = new Map();
 // QA state for QR-1.3 / 1.4 demo mobile.
 const mockPhones = new Map();
+// Read receipts (WEB-2.3): `${chatKey}:${reader}` -> furthest read messageId.
+// Direct chats have one reader per peer; groups keep one position per member.
+const reads = new Map();
+// Typing indicators (WEB-2.3): `${chatKey}:${typer}` -> TTL timer so a chat
+// can never stay stuck showing a typist who went quiet without sending.
+const typingTimers = new Map();
 const key = (a, b) => [a, b].sort().join(":");
 const groupKey = (g) => `group:${g}`;
 const user = (id) => users.find((u) => u.id === id);
 const now = () => new Date().toISOString();
+function attachmentToken() {
+  return crypto.randomBytes(9).toString("hex");
+}
+function decodeDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+  const m = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  if (!m) return null;
+  const dirty = m[3] || "";
+  const clean = dirty.replace(/\s+/g, "");
+  if (!clean) return null;
+  let bytes;
+  try {
+    bytes = Buffer.from(clean, "base64");
+  } catch {
+    return null;
+  }
+  if (bytes.toString("base64").replace(/=+$/, "") !== clean.replace(/=+$/, "")) return null;
+  return { mimeType: m[1] || null, bytes };
+}
+function mediaPreview(m) {
+  if (m && m.mKind === "image") return "Image";
+  if (m && m.mKind === "voice") return "Voice message";
+  return m ? String(m.text || "") : "";
+}
 function seed() {
   if (messages.size) return;
   messages.set(key("mervin", "pravan"), [{ id: "seed1", from: "pravan", text: "Hi Mervin! Welcome to WPT.", time: now() }]);
@@ -197,14 +248,23 @@ function sendJson(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(data);
 }
-function readBody(req) {
+const TOO_LARGE = Symbol("too_large");
+function readBody(req, limit = MAX_REQUEST_BYTES) {
   return new Promise((resolve) => {
     let b = "";
+    let oversized = false;
     req.on("data", (c) => {
+      if (oversized) return;
       b += c;
-      if (b.length > 200 * 1024) req.destroy();
+      if (b.length > limit) {
+        oversized = true;
+        b = "";
+        req.destroy();
+        resolve(TOO_LARGE);
+      }
     });
     req.on("end", () => {
+      if (oversized) return;
       let j = null;
       try {
         j = b ? JSON.parse(b) : null;
@@ -213,7 +273,7 @@ function readBody(req) {
       }
       resolve(j);
     });
-    req.on("error", () => resolve(null));
+    req.on("error", () => resolve(oversized ? TOO_LARGE : null));
   });
 }
 
@@ -231,8 +291,9 @@ function applyCors(req, res) {
 }
 
 // Real-time surface — a JSON message protocol over the standard WebSocket.
-//   server -> client: {type:'accountLinked'|'qrExpired'|'message'|'webForceLoggedOut'|'webLoggedOff'
-//                      |'mockPhoneStatus'|'mockIncomingMessage'|'presenceChanged'|'groupUpdated'|'usersUpdated', ...}
+//   server -> client: {type:'accountLinked'|'qrExpired'|'message'|'read'|'typing'
+//                      |'webForceLoggedOut'|'webLoggedOff'|'mockPhoneStatus'
+//                      |'mockIncomingMessage'|'presenceChanged'|'groupUpdated'|'usersUpdated', ...}
 const rooms = new Map(); // room -> Set<WebSocket>
 function joinRoom(ws, room) {
   if (!room) return;
@@ -258,6 +319,37 @@ function broadcast(room, payload) {
       }
     }
   }
+}
+
+function clearTypingTimer(key) {
+  const t = typingTimers.get(key);
+  if (t) {
+    clearTimeout(t);
+    typingTimers.delete(key);
+  }
+}
+
+// TTL auto-clear: once a typer goes quiet without sending, broadcast typing:false
+// to the same rooms the typing:true reached. The timer is keyed per chat+typer so
+// two group members typing at once never cancel each other.
+function scheduleTypingClear(chatKey, payload, ttl) {
+  clearTypingTimer(chatKey);
+  const timer = setTimeout(() => {
+    typingTimers.delete(chatKey);
+    const off = { type: "typing", from: payload.from, typing: false, kind: payload.kind, at: now() };
+    if (payload.kind === "group") {
+      off.groupId = payload.groupId;
+      const g = groups.find((x) => x.id === payload.groupId);
+      broadcast(`group:${payload.groupId}`, off);
+      if (g) for (const uid of g.memberIds) broadcast(`user:${uid}`, off);
+    } else {
+      off.to = payload.to;
+      broadcast(`dm:${key(payload.from, payload.to)}`, off);
+      broadcast(`user:${payload.from}`, off);
+      broadcast(`user:${payload.to}`, off);
+    }
+  }, ttl);
+  typingTimers.set(chatKey, timer);
 }
 
 async function handleRequest(req, res) {
@@ -312,12 +404,70 @@ async function handleRequest(req, res) {
   }
   if (p === "/api/messages/send" && method === "POST") {
     const body = (await readBody(req)) || {};
-    const { from, type, to, groupId, text } = body;
-    if (!user(from) || !String(text || "").trim()) {
+    if (body === TOO_LARGE) {
+      sendJson(res, 413, { ok: false, error: "payload_too_large", message: `Attachment is too large — Sealine accepts up to 100 MB.` });
+      return;
+    }
+    const { from, type, to, groupId, text, kind, dataUrl, mimeType, sizeBytes, durationSec } = body;
+    if (!user(from)) {
       sendJson(res, 400, { ok: false, error: "bad_message" });
       return;
     }
-    const msg = { id: Date.now() + Math.random(), from, text: String(text).trim().slice(0, 4000), time: now() };
+    const hasKind = typeof kind === "string" && kind.length > 0;
+    if (hasKind && !MESSAGE_KINDS.includes(kind)) {
+      sendJson(res, 400, { ok: false, error: "bad_kind", message: "Unsupported message kind." });
+      return;
+    }
+    const mKind = hasKind ? kind : "text";
+    let attachment = null;
+    if (mKind !== "text") {
+      if (typeof dataUrl !== "string" || !dataUrl) {
+        sendJson(res, 400, { ok: false, error: "bad_attachment", message: "Attachment payload is missing." });
+        return;
+      }
+      const dec = decodeDataUrl(dataUrl);
+      if (!dec) {
+        sendJson(res, 400, { ok: false, error: "bad_attachment", message: "Attachment payload is not a valid data URL." });
+        return;
+      }
+      const declaredSize = Number(sizeBytes);
+      if (!Number.isFinite(declaredSize) || declaredSize < 0) {
+        sendJson(res, 400, { ok: false, error: "bad_size", message: "Attachment size is invalid." });
+        return;
+      }
+      if (declaredSize > MAX_ATTACHMENT_BYTES) {
+        sendJson(res, 413, { ok: false, error: "attachment_too_large", maxBytes: MAX_ATTACHMENT_BYTES, message: `Attachment is too large — Sealine accepts up to 100 MB.` });
+        return;
+      }
+      if (dec.bytes.length !== declaredSize) {
+        sendJson(res, 400, { ok: false, error: "bad_size", message: "Attachment size does not match its payload." });
+        return;
+      }
+      const mime = typeof mimeType === "string" && mimeType ? mimeType : dec.mimeType || "";
+      if (!mime || !mime.startsWith(mKind === "image" ? "image/" : "audio/")) {
+        sendJson(res, 400, { ok: false, error: "bad_mime", message: `Unsupported file type for ${mKind} attachments.` });
+        return;
+      }
+      if (mKind === "voice" && !(typeof durationSec === "number" && isFinite(durationSec) && durationSec >= MIN_VOICE_SECONDS)) {
+        sendJson(res, 400, { ok: false, error: "voice_too_short", message: `Voice message is too short — hold the mic for at least ${MIN_VOICE_SECONDS} second.` });
+        return;
+      }
+      attachment = { bytes: dec.bytes, mime, declaredSize, durationSec: typeof durationSec === "number" ? durationSec : undefined };
+    }
+    let msg;
+    if (attachment) {
+      const attachmentId = attachmentToken();
+      attachments.set(attachmentId, { mimeType: attachment.mime, sizeBytes: attachment.declaredSize, bytes: attachment.bytes });
+      msg = { id: Date.now() + Math.random(), from, text: "", mKind, attachmentId, mimeType: attachment.mime, sizeBytes: attachment.declaredSize, time: now() };
+      if (mKind === "voice" && attachment.durationSec != null) msg.durationSec = attachment.durationSec;
+    } else {
+      const trimmed = String(text || "").trim();
+      if (!trimmed) {
+        sendJson(res, 400, { ok: false, error: "bad_message" });
+        return;
+      }
+      msg = { id: Date.now() + Math.random(), from, text: trimmed.slice(0, MAX_TEXT_LENGTH), time: now() };
+    }
     if (type === "direct") {
       if (!user(to)) {
         sendJson(res, 404, { ok: false, error: "user_not_found" });
@@ -347,6 +497,134 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ── read receipts (WEB-2.3) ──
+  if (p === "/api/messages/read" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    if (body === TOO_LARGE) {
+      sendJson(res, 413, { ok: false, error: "payload_too_large", message: `Attachment is too large — Sealine accepts up to 100 MB.` });
+      return;
+    }
+    const { from, to, groupId, type, messageId } = body;
+    if (!user(from)) {
+      sendJson(res, 400, { ok: false, error: "bad_read" });
+      return;
+    }
+    const mid = String(messageId ?? "");
+    if (!mid) {
+      sendJson(res, 400, { ok: false, error: "bad_read", message: "messageId is required." });
+      return;
+    }
+    if (type === "group") {
+      const g = groups.find((x) => x.id === groupId);
+      if (!g || !g.memberIds.includes(from)) {
+        sendJson(res, 403, { ok: false, error: "not_member" });
+        return;
+      }
+      const arr = messages.get(groupKey(g.id)) || [];
+      const idx = arr.findIndex((m) => String(m.id) === mid);
+      if (idx === -1) {
+        sendJson(res, 404, { ok: false, error: "read_not_found" });
+        return;
+      }
+      // Everything up to and including the reported message is now read by
+      // `from` — but only messages the reporter didn't write themselves.
+      const readIds = arr.slice(0, idx + 1).filter((m) => m.from !== from).map((m) => String(m.id));
+      reads.set(`${groupKey(g.id)}:${from}`, mid);
+      const payload = { type: "read", from, groupId: g.id, messageId: mid, messageIds: readIds, at: now() };
+      broadcast(`group:${g.id}`, payload);
+      for (const uid of g.memberIds) broadcast(`user:${uid}`, payload);
+      sendJson(res, 200, { ok: true, read: readIds.length, messageId: mid });
+      return;
+    }
+    if (!user(to)) {
+      sendJson(res, 404, { ok: false, error: "user_not_found" });
+      return;
+    }
+    const arr = messages.get(key(from, to)) || [];
+    const idx = arr.findIndex((m) => String(m.id) === mid);
+    if (idx === -1) {
+      sendJson(res, 404, { ok: false, error: "read_not_found" });
+      return;
+    }
+    const readIds = arr.slice(0, idx + 1).filter((m) => m.from === to).map((m) => String(m.id));
+    reads.set(`${key(from, to)}:${from}`, mid);
+    const payload = { type: "read", from, to, messageId: mid, messageIds: readIds, at: now() };
+    broadcast(`dm:${key(from, to)}`, payload);
+    broadcast(`user:${from}`, payload);
+    broadcast(`user:${to}`, payload);
+    sendJson(res, 200, { ok: true, read: readIds.length, messageId: mid });
+    return;
+  }
+
+  // ── typing indicators (WEB-2.3) ──
+  if (p === "/api/messages/typing" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    if (body === TOO_LARGE) {
+      sendJson(res, 413, { ok: false, error: "payload_too_large", message: `Attachment is too large — Sealine accepts up to 100 MB.` });
+      return;
+    }
+    const { from, to, groupId, type, typing } = body;
+    if (!user(from)) {
+      sendJson(res, 400, { ok: false, error: "bad_typing" });
+      return;
+    }
+    const isTyping = typing === true;
+    if (type === "group") {
+      const g = groups.find((x) => x.id === groupId);
+      if (!g || !g.memberIds.includes(from)) {
+        sendJson(res, 403, { ok: false, error: "not_member" });
+        return;
+      }
+      const chatKey = `${groupKey(g.id)}:${from}`;
+      if (isTyping) {
+        const payload = { type: "typing", from, typing: true, kind: "group", groupId: g.id, at: now() };
+        broadcast(`group:${g.id}`, payload);
+        for (const uid of g.memberIds) broadcast(`user:${uid}`, payload);
+        scheduleTypingClear(chatKey, payload, TYPING_TTL);
+      } else if (typingTimers.has(chatKey)) {
+        clearTypingTimer(chatKey);
+        const payload = { type: "typing", from, typing: false, kind: "group", groupId: g.id, at: now() };
+        broadcast(`group:${g.id}`, payload);
+        for (const uid of g.memberIds) broadcast(`user:${uid}`, payload);
+      }
+      sendJson(res, 200, { ok: true, typing: isTyping });
+      return;
+    }
+    if (!user(to)) {
+      sendJson(res, 404, { ok: false, error: "user_not_found" });
+      return;
+    }
+    const chatKey = `${key(from, to)}:${from}`;
+    if (isTyping) {
+      const payload = { type: "typing", from, typing: true, kind: "direct", to, at: now() };
+      broadcast(`dm:${key(from, to)}`, payload);
+      broadcast(`user:${from}`, payload);
+      broadcast(`user:${to}`, payload);
+      scheduleTypingClear(chatKey, payload, TYPING_TTL);
+    } else if (typingTimers.has(chatKey)) {
+      clearTypingTimer(chatKey);
+      const payload = { type: "typing", from, typing: false, kind: "direct", to, at: now() };
+      broadcast(`dm:${key(from, to)}`, payload);
+      broadcast(`user:${from}`, payload);
+      broadcast(`user:${to}`, payload);
+    }
+    sendJson(res, 200, { ok: true, typing: isTyping });
+    return;
+  }
+
+  // ── media download (image / voice attachments) ──
+  const media = p.match(/^\/api\/media\/([^/]+)$/);
+  if (media && method === "GET") {
+    const a = attachments.get(decodeURIComponent(media[1]));
+    if (!a) {
+      sendJson(res, 404, { ok: false, error: "not_found" });
+      return;
+    }
+    res.writeHead(200, { "Content-Type": a.mimeType, "Content-Length": a.bytes.length, "Cache-Control": "no-store" });
+    res.end(a.bytes);
+    return;
+  }
+
   // ── recent chats ──
   const recent = p.match(/^\/api\/recent-chats\/([^/]+)$/);
   if (recent && method === "GET") {
@@ -357,14 +635,14 @@ async function handleRequest(req, res) {
       const arr = messages.get(key(uid, u.id)) || [];
       if (arr.length) {
         const last = arr[arr.length - 1];
-        items.push({ type: "direct", id: u.id, name: u.name, preview: last.text, time: last.time, online: onlineUsers.has(u.id) });
+        items.push({ type: "direct", id: u.id, name: u.name, preview: mediaPreview(last), time: last.time, online: onlineUsers.has(u.id) });
       }
     }
     for (const g of groups) {
       const arr = messages.get(groupKey(g.id)) || [];
       if (arr.length) {
         const last = arr[arr.length - 1];
-        items.push({ type: "group", id: g.id, name: g.name, preview: last.text, time: last.time, online: false });
+        items.push({ type: "group", id: g.id, name: g.name, preview: mediaPreview(last), time: last.time, online: false });
       }
     }
     items.sort((a, b) => new Date(b.time) - new Date(a.time));

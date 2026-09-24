@@ -5,6 +5,10 @@ export interface OutboxEntry {
   from: string | null;
   to: string | null;
   text: string;
+  kind: "text" | "image" | "voice" | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  durationSec: number | null;
   status: "pending" | "failed";
   attempts: number;
   queuedAt: number;

@@ -35,7 +35,12 @@ import {
 } from "../lib/outbox-client";
 import { ChatApp } from "./chat-app";
 import { QrGate } from "./qr-gate";
-import type { ServerChatSummaryItem, ServerSentMessage, ServerRecentChats, ServerUser } from "./types";
+import { LinkingScreen } from "./linking-screen";
+import { applyTheme, readThemeMode } from "../lib/theme";
+import { isMessageKind, mediaPreviewText, validateAttachment, type ClientMediaAttachment } from "../lib/messages";
+import { READ_ROUTE, TYPING_ROUTE, TYPING_DISPLAY_MS } from "@wpt/shared";
+import { applyReadReceipt, buildReadRequest, isReceiptStatus, lastPeerMessage, nextMessageStatus } from "../lib/receipts";
+import type { ServerChatSummaryItem, ServerSentMessage, ServerRecentChats, ServerUser, ServerGroup } from "./types";
 
 const VALIDATE_INTERVAL_MS = 30_000;
 const RECONNECT_MS = 3_000;
@@ -56,18 +61,31 @@ export function initials(name: string): string {
 }
 
 export function WebApp(): JSX.Element {
-  const [phase, setPhase] = useState<"gate" | "chat">("gate");
+  const [phase, setPhase] = useState<"gate" | "linking" | "chat">("gate");
   const [session, setSession] = useState<WebSession | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [flashMsg, setFlashMsg] = useState<string | null>(null);
   const [socketOk, setSocketOk] = useState(false);
+  // Live typing + read-receipt side-channel (WEB-2.3). peerTyping is keyed by
+  // chat id and only ever reflects the peer (our own typing is never shown).
+  const [peerTyping, setPeerTyping] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
 
   const stateRef = useRef<WebAppStateV1>(defaultAppState());
   const wsRef = useRef<WebSocket | null>(null);
   const outboxRef = useRef<WptOutboxApi>(createLocalOutbox());
+  // Media payloads (image data URLs / voice blobs) live here in-memory only —
+  // never persisted. The outbox/journal carries just metadata (mKind, size,
+  // duration); a reloaded tab has no payload and marks those entries failed.
+  const mediaPayloadRef = useRef<Map<string, string>>(new Map());
   const usersRef = useRef<ServerUser[]>([]);
+  const groupsRef = useRef<ServerGroup[]>([]);
   const historyLoadedRef = useRef<Set<string>>(new Set());
   const inFlightRef = useRef(false);
+  // Typing safety net: a local deadline + timer per chat that hides a stale
+  // typing row even if the peer's typing:false broadcast never arrives.
+  const typingDeadlineRef = useRef<Map<string, number>>(new Map());
+  const typingSafetyRef = useRef<Map<string, number>>(new Map());
   const reconnectTimerRef = useRef<number | null>(null);
   const validateTimerRef = useRef<number | null>(null);
   const outboxTimerRef = useRef<number | null>(null);
@@ -123,6 +141,7 @@ export function WebApp(): JSX.Element {
     stopTimers();
     clearOutboxStorage();
     clearAppStateStorage();
+    mediaPayloadRef.current.clear();
     stateRef.current = defaultAppState();
     historyLoadedRef.current = new Set();
     setPhase("gate");
@@ -148,6 +167,7 @@ export function WebApp(): JSX.Element {
     showForceLogoutNotice(null);
     clearWebSession();
     resetToGate();
+    setFlashMsg("Logged off this browser");
   }
 
   function onVisibilityChange(): void {
@@ -194,6 +214,14 @@ export function WebApp(): JSX.Element {
   async function loadServerUsers(): Promise<void> {
     const r = await wptApi<ServerUser[]>("GET", "/api/users");
     if (r.ok && Array.isArray(r.body)) usersRef.current = r.body;
+  }
+
+  async function loadServerGroups(): Promise<void> {
+    const r = await wptApi<ServerGroup[]>("GET", "/api/groups");
+    if (r.ok && Array.isArray(r.body)) {
+      groupsRef.current = r.body;
+      bump();
+    }
   }
 
   async function loadRecentChats(): Promise<void> {
@@ -265,15 +293,113 @@ export function WebApp(): JSX.Element {
     return stateRef.current.recentChats.find((c) => c.isGroup && (c.serverId === groupId || c.id === groupId)) ?? null;
   }
 
+  // Look up a direct chat WITHOUT creating a row — typing/read side-channel
+  // events must never fabricate a chat the user hasn't actually messaged.
+  function chatByPeerIfExists(peerId: string): WebChatItem | null {
+    return stateRef.current.recentChats.find((c) => !c.isGroup && (c.serverId === peerId || c.id === peerId)) ?? null;
+  }
+
+  // Hide a chat's typing row (and cancel its safety timer). Keeping the timer
+  // here centralizes the cheap cleanup on every typing:false or new message.
+  function clearPeerTyping(chatId: string): void {
+    const safety = typingSafetyRef.current.get(chatId);
+    if (safety !== undefined) {
+      window.clearTimeout(safety);
+      typingSafetyRef.current.delete(chatId);
+    }
+    typingDeadlineRef.current.delete(chatId);
+    setPeerTyping((prev) => {
+      if (!prev[chatId]) return prev;
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+  }
+
+  function showPeerTyping(chatId: string): void {
+    const safety = typingSafetyRef.current.get(chatId);
+    if (safety !== undefined) window.clearTimeout(safety);
+    const deadline = Date.now() + TYPING_DISPLAY_MS;
+    typingDeadlineRef.current.set(chatId, deadline);
+    typingSafetyRef.current.set(chatId, window.setTimeout(() => {
+      typingSafetyRef.current.delete(chatId);
+      if (typingDeadlineRef.current.get(chatId) === deadline) clearPeerTyping(chatId);
+    }, TYPING_DISPLAY_MS));
+    setPeerTyping((prev) => (prev[chatId] ? prev : { ...prev, [chatId]: true }));
+  }
+
+  function onTypingEvent(e: WptEvent): void {
+    const s = sessionRef.current;
+    if (!s) return;
+    const uid = String(e.from ?? "");
+    if (!uid || uid === s.userId) return;
+    const kind = typeof e.kind === "string" ? e.kind : "direct";
+    const chat = kind === "group" && typeof e.groupId === "string" ? chatByGroup(e.groupId) : chatByPeerIfExists(uid);
+    if (!chat) return;
+    if (e.typing === true) showPeerTyping(chat.id);
+    else clearPeerTyping(chat.id);
+  }
+
+  function onReadReceipt(e: WptEvent): void {
+    const s = sessionRef.current;
+    if (!s) return;
+    const ids = Array.isArray(e.messageIds)
+      ? e.messageIds.filter((x) => typeof x === "string" || typeof x === "number").map(String)
+      : typeof e.messageId === "string" || typeof e.messageId === "number"
+        ? [String(e.messageId)]
+        : [];
+    if (ids.length === 0) return;
+    const kind = typeof e.kind === "string" ? e.kind : "direct";
+    const chat = kind === "group" && typeof e.groupId === "string" ? chatByGroup(e.groupId) : chatByPeerIfExists(String(e.from ?? ""));
+    if (!chat) return;
+    const hist = stateRef.current.chatHistory[chat.id];
+    if (!hist) return;
+    if (applyReadReceipt(hist, ids, s.userId) > 0) {
+      persist();
+      bump();
+    }
+  }
+
+  // Report to the relay that a message of the peer's is now read by me. The
+  // server reads-through to that id and broadcasts who-read-what to the senders.
+  async function reportRead(chat: WebChatItem, messageId: string): Promise<void> {
+    const s = sessionRef.current;
+    if (!s || !messageId) return;
+    await wptApi("POST", READ_ROUTE, buildReadRequest({ from: s.userId, isGroup: chat.isGroup, to: chat.serverId ?? chat.id, groupId: chat.serverId ?? chat.id, messageId }));
+  }
+
+  // Announce that the local (Web) user is/stopped typing in a chat. The Web
+  // client only writes over HTTP; the relay fans it out over the sockets.
+  async function announceTyping(chat: WebChatItem, typing: boolean): Promise<void> {
+    const s = sessionRef.current;
+    if (!s) return;
+    const body: Record<string, unknown> = { from: s.userId, type: chat.isGroup ? "group" : "direct", typing };
+    if (chat.isGroup) body.groupId = chat.serverId ?? chat.id;
+    else body.to = chat.serverId ?? chat.id;
+    await wptApi("POST", TYPING_ROUTE, body);
+  }
+
+  function sendTyping(chatId: string, typing: boolean): void {
+    const chat = stateRef.current.recentChats.find((x) => x.id === chatId);
+    if (!chat) return;
+    void announceTyping(chat, typing);
+  }
+
   function onIncomingServerMessage(e: WptEvent): void {
     const sessionNow = sessionRef.current;
     if (!sessionNow) return;
     const kind = typeof e.kind === "string" ? e.kind : "direct";
+    const msgKind = isMessageKind(e.mKind) ? e.mKind : "text";
     const msg: WebChatMessage = {
       id: String(e.id ?? `in-${Date.now()}`),
       from: String(e.from ?? "unknown"),
       text: String(e.text ?? ""),
       time: String(e.time ?? new Date().toISOString()),
+      kind: msgKind,
+      attachmentId: typeof e.attachmentId === "string" || typeof e.attachmentId === "number" ? String(e.attachmentId) : undefined,
+      mimeType: typeof e.mimeType === "string" ? e.mimeType : undefined,
+      sizeBytes: typeof e.sizeBytes === "number" ? e.sizeBytes : undefined,
+      durationSec: typeof e.durationSec === "number" ? e.durationSec : undefined,
     };
     const chat = kind === "group" ? chatByGroup(String(e.groupId ?? "")) : chatByPeer(msg.from);
     if (!chat) return;
@@ -281,26 +407,46 @@ export function WebApp(): JSX.Element {
     const existing = list.find((c) => c.id === chat.id);
     if (!existing) return;
     if (msg.from === sessionNow.userId) {
-      finalizeEcho(existing.id, msg.id, msg.id);
+      finalizeEcho(existing.id, msg.id, msg.id, msg);
       return;
     }
     const hist = stateRef.current.chatHistory[existing.id] ?? [];
     if (!hist.some((m) => m.id === msg.id)) hist.push(msg);
     stateRef.current.chatHistory[existing.id] = hist;
-    existing.preview = msg.text;
+    existing.preview = msgKind === "text" ? msg.text : mediaPreviewText(msgKind);
     existing.time = msg.time;
     const isOpen = stateRef.current.activeChatId === existing.id;
     if (!isOpen) existing.unread += 1;
+    else if (msg.from !== sessionNow.userId) void reportRead(existing, msg.id);
     persist();
     bump();
   }
 
-  function finalizeEcho(chatId: string, tmpId: string, serverMsgId: string): void {
+  function finalizeEcho(chatId: string, tmpId: string, serverMsgId: string, extra?: ServerSentMessage): void {
     const hist = stateRef.current.chatHistory[chatId] ?? [];
     const tmp = hist.find((m) => m.tmp && m.id === tmpId);
     if (!tmp) return;
     tmp.tmp = false;
     tmp.id = serverMsgId;
+    tmp.status = nextMessageStatus(isReceiptStatus(tmp.status) ? tmp.status : null, "echo");
+    if (extra) {
+      if (isMessageKind(extra.mKind)) tmp.kind = extra.mKind;
+      if (extra.attachmentId != null) tmp.attachmentId = String(extra.attachmentId);
+      if (typeof extra.mimeType === "string") tmp.mimeType = extra.mimeType;
+      if (typeof extra.sizeBytes === "number") tmp.sizeBytes = extra.sizeBytes;
+      if (typeof extra.durationSec === "number") tmp.durationSec = extra.durationSec;
+    }
+    mediaPayloadRef.current.delete(tmpId);
+    persist();
+    bump();
+  }
+
+  function markLocalFailed(chatId: string, tmpId: string): void {
+    mediaPayloadRef.current.delete(tmpId);
+    const hist = stateRef.current.chatHistory[chatId] ?? [];
+    const m = hist.find((x) => x.tmp && x.id === tmpId);
+    if (!m) return;
+    m.status = "failed";
     persist();
     bump();
   }
@@ -325,6 +471,12 @@ export function WebApp(): JSX.Element {
         break;
       case "presenceChanged":
         onPresenceChanged(e);
+        break;
+      case "read":
+        onReadReceipt(e);
+        break;
+      case "typing":
+        onTypingEvent(e);
         break;
       default:
         break;
@@ -352,23 +504,39 @@ export function WebApp(): JSX.Element {
     for (const m of pending) {
       if ((m.attempts ?? 0) >= OUTBOX_MAX_TRIES) {
         outbox.markFailed(m.id);
+        markLocalFailed(m.chatId || "", m.id);
         continue;
       }
-      const payload: { from: string; type: "direct" | "group"; text: string; to?: string; groupId?: string } = {
+      const payload: Record<string, unknown> = {
         from: uid,
         type: m.to ? "direct" : "group",
         text: m.text,
         to: m.to || undefined,
         groupId: m.to ? undefined : m.chatId || undefined,
       };
+      if (m.kind === "image" || m.kind === "voice") {
+        const dataUrl = mediaPayloadRef.current.get(m.id);
+        if (!dataUrl) {
+          outbox.markFailed(m.id);
+          markLocalFailed(m.chatId || "", m.id);
+          continue;
+        }
+        payload.kind = m.kind;
+        payload.dataUrl = dataUrl;
+        payload.mimeType = m.mimeType;
+        payload.sizeBytes = m.sizeBytes;
+        if (m.kind === "voice" && typeof m.durationSec === "number") payload.durationSec = m.durationSec;
+      }
       const r = await wptApi<{ ok: boolean; message: ServerSentMessage }>("POST", "/api/messages/send", payload);
       if (r.status === 0) {
         outbox.markFailed(m.id);
+        markLocalFailed(m.chatId || "", m.id);
       } else if (r.ok && r.body?.message) {
         outbox.markSent(m.id);
-        finalizeEcho(m.chatId || "", m.id, String(r.body.message.id));
+        finalizeEcho(m.chatId || "", m.id, String(r.body.message.id), r.body.message);
       } else {
         outbox.markFailed(m.id);
+        markLocalFailed(m.chatId || "", m.id);
       }
     }
   }
@@ -389,7 +557,20 @@ export function WebApp(): JSX.Element {
     const ids = new Set(hist.map((m) => m.id));
     for (const sm of r.body) {
       const mid = String(sm.id);
-      if (!ids.has(mid)) hist.push({ id: mid, from: sm.from, text: sm.text, time: sm.time });
+      if (!ids.has(mid)) {
+        const smKind = isMessageKind(sm.mKind) ? sm.mKind : "text";
+        hist.push({
+          id: mid,
+          from: sm.from,
+          text: sm.text,
+          time: sm.time,
+          kind: smKind,
+          attachmentId: sm.attachmentId != null ? String(sm.attachmentId) : undefined,
+          mimeType: typeof sm.mimeType === "string" ? sm.mimeType : undefined,
+          sizeBytes: typeof sm.sizeBytes === "number" ? sm.sizeBytes : undefined,
+          durationSec: typeof sm.durationSec === "number" ? sm.durationSec : undefined,
+        });
+      }
     }
     stateRef.current.chatHistory[chat.id] = hist;
     const first = hist[0];
@@ -409,6 +590,9 @@ export function WebApp(): JSX.Element {
     persist();
     bump();
     void serverChatHistory(c);
+    const hist = stateRef.current.chatHistory[chatId] ?? [];
+    const lastPeer = lastPeerMessage(hist, sessionRef.current?.userId ?? "");
+    if (lastPeer) void reportRead(c, lastPeer.id);
   }
 
   function sendMessage(chatId: string, text: string): void {
@@ -418,7 +602,7 @@ export function WebApp(): JSX.Element {
     if (!trimmed) return;
     const chat = stateRef.current.recentChats.find((x) => x.id === chatId);
     if (!chat) return;
-    const tmpMsg: WebChatMessage = { id: `tmp-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, from: s.userId, text: trimmed, time: new Date().toISOString(), tmp: true };
+    const tmpMsg: WebChatMessage = { id: `tmp-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, from: s.userId, text: trimmed, time: new Date().toISOString(), tmp: true, status: "sent" };
     const hist = stateRef.current.chatHistory[chatId] ?? [];
     hist.push(tmpMsg);
     stateRef.current.chatHistory[chatId] = hist;
@@ -430,6 +614,45 @@ export function WebApp(): JSX.Element {
       to: chat.isGroup ? null : chat.serverId || chat.id,
       from: s.userId,
       text: trimmed,
+    });
+    void flushOutbox();
+  }
+
+  function sendMedia(chatId: string, attach: ClientMediaAttachment): void {
+    const s = sessionRef.current;
+    if (!s) return;
+    const chat = stateRef.current.recentChats.find((x) => x.id === chatId);
+    if (!chat) return;
+    const v = validateAttachment({ kind: attach.kind, sizeBytes: attach.sizeBytes, mimeType: attach.mimeType, durationSec: attach.durationSec });
+    if (!v.ok) return;
+    const tmpMsg: WebChatMessage = {
+      id: `tmp-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      from: s.userId,
+      text: "",
+      time: new Date().toISOString(),
+      tmp: true,
+      status: "sent",
+      kind: attach.kind,
+      mimeType: attach.mimeType,
+      sizeBytes: attach.sizeBytes,
+      durationSec: attach.durationSec,
+    };
+    const hist = stateRef.current.chatHistory[chatId] ?? [];
+    hist.push(tmpMsg);
+    stateRef.current.chatHistory[chatId] = hist;
+    persist();
+    bump();
+    mediaPayloadRef.current.set(tmpMsg.id, attach.dataUrl);
+    outboxRef.current.enqueue({
+      id: tmpMsg.id,
+      chatId,
+      to: chat.isGroup ? null : chat.serverId || chat.id,
+      from: s.userId,
+      text: "",
+      kind: attach.kind,
+      mimeType: attach.mimeType,
+      sizeBytes: attach.sizeBytes,
+      durationSec: attach.durationSec,
     });
     void flushOutbox();
   }
@@ -481,11 +704,14 @@ export function WebApp(): JSX.Element {
       }, OUTBOX_RETRY_MS);
     }
     void loadRecentChats();
-    setPhase("chat");
+    setPhase("linking");
+    window.setTimeout(() => setPhase("chat"), 900);
   }
 
   useEffect(() => {
+    applyTheme(readThemeMode());
     void loadServerUsers();
+    void loadServerGroups();
     document.addEventListener("visibilitychange", onVisibilityChange);
     const saved = loadWebSession();
     let mounted = true;
@@ -518,7 +744,25 @@ export function WebApp(): JSX.Element {
   }, []);
 
   if (phase === "chat" && session) {
-    return <ChatApp session={session} state={stateRef.current} users={usersRef.current} socketOk={socketOk} onSelectChat={openChatById} onSendMessage={sendMessage} onStartChat={startChatWith} onLogout={() => void manualLogout()} />;
+    return (
+      <ChatApp
+        session={session}
+        state={stateRef.current}
+        users={usersRef.current}
+        groups={groupsRef.current}
+        socketOk={socketOk}
+        peerTyping={peerTyping}
+        onTyping={sendTyping}
+        onSelectChat={openChatById}
+        onSendMessage={sendMessage}
+        onSendMedia={sendMedia}
+        onStartChat={startChatWith}
+        onLogout={() => void manualLogout()}
+      />
+    );
   }
-  return <QrGate notice={notice} onLinked={handleLinked} />;
+  if (phase === "linking") {
+    return <LinkingScreen />;
+  }
+  return <QrGate notice={notice} flash={flashMsg} onLinked={handleLinked} onFlashClear={() => setFlashMsg(null)} />;
 }

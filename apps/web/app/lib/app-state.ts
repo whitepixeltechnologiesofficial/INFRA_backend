@@ -1,5 +1,9 @@
 // Web chat UI state persistence (survives tab close / browser restart).
+import type { MessageKind } from "./messages";
+
 export const APP_STATE_KEY = "wpt_web_app_state_v1";
+
+export type MessageStatus = "sent" | "delivered" | "failed" | "read";
 
 export interface WebChatMessage {
   id: string;
@@ -7,6 +11,12 @@ export interface WebChatMessage {
   text: string;
   time: string;
   tmp?: boolean;
+  status?: MessageStatus;
+  kind?: MessageKind;
+  attachmentId?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  durationSec?: number;
 }
 
 export interface WebChatItem {
