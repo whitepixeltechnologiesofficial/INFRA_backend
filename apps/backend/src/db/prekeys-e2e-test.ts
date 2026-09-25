@@ -3,9 +3,11 @@
  *
  * Starts the real Express app on a random port, creates two throwaway
  * users + devices (Alice, Bob), and exercises the prekey routes.
- * All rows it creates are deleted at the end.
+ * Uses the EXISTING signed_prekeys / one_time_prekeys tables (ENC-4.1),
+ * which already hold live rows — this test only adds/removes its own
+ * rows and prints a before/after count to prove nothing else was touched.
  *
- * Requires migration 012_create_prekeys.sql to be applied first.
+ * Requires devices.signing_public_key to exist (apply migrations/012 first).
  * Run: pnpm --filter @wpt/backend exec tsx src/db/prekeys-e2e-test.ts
  */
 
@@ -39,24 +41,30 @@ function check(name: string, ok: boolean, detail?: unknown) {
   }
 }
 
-// ── key helpers (node:crypto, raw 32-byte keys as base64) ──
+// ── key helpers ──
 const rawPub = (k: KeyObject) => Buffer.from(k.export({ format: "jwk" }).x as string, "base64url");
 const b64 = (b: Buffer) => b.toString("base64");
 const newX25519 = () => generateKeyPairSync("x25519");
-const newOtps = (n: number) => Array.from({ length: n }, () => b64(rawPub(newX25519().publicKey)));
+
+let nextKeyId = 1;
+const newOtps = (n: number) =>
+  Array.from({ length: n }, () => ({
+    keyId: nextKeyId++,
+    publicKey: b64(rawPub(newX25519().publicKey)),
+  }));
 
 function makeDeviceKeys() {
   const identity = newX25519();
   const signing = generateKeyPairSync("ed25519");
   const spk = newX25519();
   const spkRaw = rawPub(spk.publicKey);
-  const signature = edSign(null, spkRaw, signing.privateKey); // signs the raw SPK public key
+  const signature = edSign(null, spkRaw, signing.privateKey);
   return {
     identityKey: b64(rawPub(identity.publicKey)),
     signingPublicKey: b64(rawPub(signing.publicKey)),
     signingPublicRaw: rawPub(signing.publicKey),
     signing,
-    signedPreKey: { publicKey: b64(spkRaw), signature: b64(signature) },
+    signedPreKey: { keyId: 1, publicKey: b64(spkRaw), signature: b64(signature) },
   };
 }
 
@@ -65,14 +73,25 @@ async function main() {
   if (!dbUrl) throw new Error("DATABASE_URL not set");
   const pool = new Pool({ connectionString: dbUrl });
 
-  // Fail early with a clear message if the migration has not been applied.
   const t = await pool.query(
     `SELECT to_regclass('public.one_time_prekeys') AS a, to_regclass('public.signed_prekeys') AS b`,
   );
   if (!t.rows[0].a || !t.rows[0].b) {
     await pool.end();
-    throw new Error("Prekey tables not found. Apply migrations/012_create_prekeys.sql first.");
+    throw new Error("Prekey tables not found.");
   }
+
+  const col = await pool.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 'devices' AND column_name = 'signing_public_key'`,
+  );
+  if (col.rowCount === 0) {
+    await pool.end();
+    throw new Error("devices.signing_public_key is missing. Apply migrations/012 first.");
+  }
+
+  const before = await pool.query(
+    `SELECT (SELECT count(*)::int FROM signed_prekeys) AS s, (SELECT count(*)::int FROM one_time_prekeys) AS o`,
+  );
 
   const { httpServer, io } = createApp();
   await new Promise<void>((r) => httpServer.listen(0, "127.0.0.1", r));
@@ -82,7 +101,6 @@ async function main() {
   const deviceIds: string[] = [];
 
   try {
-    // ── find the API version prefix used by the app ──
     const { API_VERSION } = await import("@wpt/shared");
     const api = async (path: string, token: string | null, method = "GET", body?: unknown) => {
       const res = await fetch(`${base}/${API_VERSION}/prekeys${path}`, {
@@ -102,12 +120,11 @@ async function main() {
       return { status: res.status, json };
     };
 
-    // ── create two throwaway users + devices (mirrors onboarding) ──
     async function makeUser() {
       const userId = randomUUID();
       const deviceId = randomUUID();
       const phone = `+1${randomInt(2000000000, 2999999999)}`;
-      await pool.query(`INSERT INTO users (id, phone_number, name) VALUES ($1, $2, $3)`, [userId, phone, "BE-5.2 test user"]);
+      await pool.query(`INSERT INTO users (id, phone_number) VALUES ($1, $2)`, [userId, phone]);
       userIds.push(userId);
       await pool.query(
         `INSERT INTO devices (id, user_id, device_type, platform, identity_public_key)
@@ -131,13 +148,10 @@ async function main() {
     check("bundle for malformed id -> 400", (await api(`/bundle/not-a-uuid`, bob.token)).status === 400);
 
     console.log("\n[2] Upload validation");
-    check(
-      "empty upload -> 400",
-      (await api("/upload", alice.token, "POST", {})).status === 400,
-    );
+    check("empty upload -> 400", (await api("/upload", alice.token, "POST", {})).status === 400);
     check(
       "wrong-size one-time key -> 400",
-      (await api("/upload", alice.token, "POST", { oneTimePreKeys: ["c2hvcnQ="] })).status === 400,
+      (await api("/upload", alice.token, "POST", { oneTimePreKeys: [{ keyId: 1, publicKey: "c2hvcnQ=" }] })).status === 400,
     );
     check(
       "signed prekey without identity key (placeholder still set) -> 400",
@@ -160,8 +174,7 @@ async function main() {
     check("upload -> 200, 5 remaining", up.status === 200 && up.json?.oneTimePreKeysRemaining === 5, up);
     check(
       "changing identity key later -> 409",
-      (await api("/upload", alice.token, "POST", { identityKey: b64(rawPub(newX25519().publicKey)) }))
-        .status === 409,
+      (await api("/upload", alice.token, "POST", { identityKey: b64(rawPub(newX25519().publicKey)) })).status === 409,
     );
 
     console.log("\n[4] Bundle is structurally valid (X3DH)");
@@ -191,7 +204,10 @@ async function main() {
         Buffer.from(bundle?.signedPreKeySignature ?? "", "base64"),
       ),
     );
-    check("one-time prekey came from Alice's uploaded set", otps1.includes(bundle?.oneTimePreKey));
+    check(
+      "one-time prekey came from Alice's uploaded set",
+      otps1.some((k) => k.publicKey === bundle?.oneTimePreKey && k.keyId === bundle?.oneTimePreKeyId),
+    );
 
     console.log("\n[5] One-time prekeys are single-use");
     const b2 = await api(`/bundle/${alice.deviceId}`, bob.token);
@@ -223,12 +239,17 @@ async function main() {
     check("fallback bundle has no oneTimePreKey", dry.json && !("oneTimePreKey" in dry.json));
     check("fallback bundle still has signed prekey + signature", !!dry.json?.signedPreKey && !!dry.json?.signedPreKeySignature);
     const cnt2 = await api("/count", alice.token);
-    check("count -> 0 remaining, needsReplenishment true", cnt2.json?.oneTimePreKeysRemaining === 0 && cnt2.json?.needsReplenishment === true, cnt2);
+    check(
+      "count -> 0 remaining, needsReplenishment true",
+      cnt2.json?.oneTimePreKeysRemaining === 0 && cnt2.json?.needsReplenishment === true,
+      cnt2,
+    );
 
     console.log("\n[8] Signed prekey rotation");
     const newSpk = makeDeviceKeys();
     const rot = await api("/upload", alice.token, "POST", {
       signedPreKey: {
+        keyId: 2,
         publicKey: newSpk.signedPreKey.publicKey,
         signature: b64(edSign(null, Buffer.from(newSpk.signedPreKey.publicKey, "base64"), aliceKeys.signing.privateKey)),
       },
@@ -236,19 +257,16 @@ async function main() {
     check("rotate signed prekey -> 200", rot.status === 200, rot);
     const b3 = await api(`/bundle/${alice.deviceId}`, bob.token);
     check("bundle now serves the new signed prekey", b3.json?.signedPreKey === newSpk.signedPreKey.publicKey);
-    const cur = await pool.query(
-      `SELECT count(*)::int AS n FROM signed_prekeys WHERE device_id = $1 AND replaced_at IS NULL`,
-      [alice.deviceId],
-    );
-    check("exactly one current signed prekey in DB", cur.rows[0].n === 1, cur.rows[0]);
+    const top = await pool.query(`SELECT max(key_id)::int AS k FROM signed_prekeys WHERE device_id = $1`, [alice.deviceId]);
+    check("highest signed key_id is 2", top.rows[0].k === 2, top.rows[0]);
+    const stale = await api("/upload", alice.token, "POST", {
+      signedPreKey: { keyId: 2, publicKey: newSpk.signedPreKey.publicKey, signature: newSpk.signedPreKey.signature },
+    });
+    check("re-using a signed key_id -> 409", stale.status === 409, stale);
 
     console.log("\n[9] Device with placeholder key is not served");
-    check(
-      "Bob (never uploaded keys) -> 404",
-      (await api(`/bundle/${bob.deviceId}`, alice.token)).status === 404,
-    );
+    check("Bob (never uploaded keys) -> 404", (await api(`/bundle/${bob.deviceId}`, alice.token)).status === 404);
   } finally {
-    // ── cleanup: remove everything this run created ──
     if (deviceIds.length) {
       await pool.query(`DELETE FROM one_time_prekeys WHERE device_id = ANY($1::uuid[])`, [deviceIds]);
       await pool.query(`DELETE FROM signed_prekeys WHERE device_id = ANY($1::uuid[])`, [deviceIds]);
@@ -257,6 +275,12 @@ async function main() {
     if (userIds.length) {
       await pool.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [userIds]);
     }
+    const after = await pool.query(
+      `SELECT (SELECT count(*)::int FROM signed_prekeys) AS s, (SELECT count(*)::int FROM one_time_prekeys) AS o`,
+    );
+    console.log(
+      `\nExisting rows before/after: signed ${before.rows[0].s}/${after.rows[0].s}, one-time ${before.rows[0].o}/${after.rows[0].o}`,
+    );
     await new Promise<void>((r) => io.close(() => r()));
     await pool.end();
   }
