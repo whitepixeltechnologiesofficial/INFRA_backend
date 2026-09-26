@@ -124,7 +124,11 @@ async function main() {
       const userId = randomUUID();
       const deviceId = randomUUID();
       const phone = `+1${randomInt(2000000000, 2999999999)}`;
-      await pool.query(`INSERT INTO users (id, phone_number) VALUES ($1, $2)`, [userId, phone]);
+            await pool.query(`INSERT INTO users (id, phone_number, name) VALUES ($1, $2, $3)`, [
+        userId,
+        phone,
+        `Test User ${userId.slice(0, 8)}`,
+      ]);
       userIds.push(userId);
       await pool.query(
         `INSERT INTO devices (id, user_id, device_type, platform, identity_public_key)
