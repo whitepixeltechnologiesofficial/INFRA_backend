@@ -85,7 +85,8 @@ async function main() {
         },
         body: body ? JSON.stringify(body) : undefined,
       });
-      let json: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper parses varied API response shapes
+let json: any = null;
       try {
         json = await res.json();
       } catch {
@@ -94,7 +95,7 @@ async function main() {
       return { status: res.status, json };
     };
 
-    async function makeUser() {
+    const makeUser = async () => {
       const userId = randomUUID();
       const deviceId = randomUUID();
       const phone = `+1${randomInt(2000000000, 2999999999)}`;
@@ -112,7 +113,7 @@ async function main() {
       deviceIds.push(deviceId);
       const token = await issueAccessToken({ userId, deviceId, sessionId: randomUUID() });
       return { userId, deviceId, token };
-    }
+    };
 
     const alice = await makeUser();
     const bob = await makeUser();

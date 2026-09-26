@@ -8,7 +8,7 @@ import {
   aeadDecrypt,
   randomNonce,
 } from "./primitives.js";
-import { bytesToHex } from "@noble/hashes/utils";
+
 
 /**
  * Sender Key — group messaging efficiency layer on top of pairwise

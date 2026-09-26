@@ -1,9 +1,10 @@
-import { utf8ToBytes } from "@noble/hashes/utils";
-import { x25519, ed25519 } from "@noble/curves/ed25519";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha2";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
+import { x25519, ed25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { randomBytes } from "@noble/hashes/utils.js";
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
-import { randomBytes } from "@noble/hashes/utils";
+
 
 /**
  * Everything in this file is pure JS with no native/WASM dependency, so it
