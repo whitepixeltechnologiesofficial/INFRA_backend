@@ -1,6 +1,14 @@
 -- ============================================================
--- 012_rename_message_relay_to_pending_messages.sql
+-- 013_rename_message_relay_to_pending_messages.sql
 -- Run this in: Supabase → SQL Editor → New Query → Run
+--
+-- RENUMBERED from 012 during review. 012_add_devices_signing_key.sql.sql
+-- (BE-5.2) is already merged on main, so two migrations shared the number
+-- 012 and the manual apply order was ambiguous. This file moves to 013;
+-- 012_add_devices_signing_key.sql.sql is left untouched as another author's
+-- merged work. No functional change - the file is applied by hand, not by a
+-- migration runner, so the number is documentation only. The rollback block at
+-- the bottom is unchanged and still reverses this migration exactly.
 --
 -- Renames public.message_relay to public.pending_messages to match
 -- the Tech Arch S6.4 name already referenced by 009. Existing rows
