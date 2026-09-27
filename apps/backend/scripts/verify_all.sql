@@ -135,6 +135,25 @@ SELECT 'R3.5' AS check_id,
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_name IN ('test_reports','test_report_evidence');
 
+-- R3.8 ── BE-R2.3: report_evidence.metadata_snapshot jsonb (TAD S6.6) + test mirror
+SELECT 'R3.8' AS check_id,
+       CASE WHEN count(*) FILTER (WHERE table_name = 'report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb'
+                                    AND is_nullable = 'YES') = 1
+             AND count(*) FILTER (WHERE table_name = 'test_report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status,
+       string_agg(table_name || '.' || column_name || ':' || data_type
+                  || CASE WHEN is_nullable = 'YES' THEN ' (nullable)'
+                          ELSE ' NOT NULL' END,
+                  ', ' ORDER BY table_name) AS detail
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name = 'metadata_snapshot'
+  AND table_name IN ('report_evidence','test_report_evidence');
+
 -- ---------------------------------------------------------------------------
 -- R4 ── DB-2.5-V  audit_log columns + moderation functions
 -- ---------------------------------------------------------------------------

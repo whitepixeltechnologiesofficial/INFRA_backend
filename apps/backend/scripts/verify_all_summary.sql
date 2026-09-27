@@ -1,6 +1,8 @@
 -- ============================================================================
 -- verify_all_summary.sql
--- All 36 static checks in ONE result set (SELECT ... UNION ALL ...).
+-- All 35 static checks in ONE result set (SELECT ... UNION ALL ...).
+-- (Count corrected: the header previously said 36 while 34 rows existed; R3.8
+--  added by BE-R2.3 makes the true total 35.)
 -- Why: the Supabase SQL Editor shows only the LAST result set; a single grid
 -- guarantees every check is visible. Functional tests stay as DO blocks with
 -- NOTICEs (rolled back) at the end.
@@ -110,6 +112,20 @@ FROM (
                AND table_name IN ('test_reports','test_report_evidence')) = 2 THEN 'PASS' ELSE 'FAIL' END,
     (SELECT COALESCE(string_agg(table_name, ', ' ORDER BY table_name),'none') FROM information_schema.tables
      WHERE table_schema='public' AND table_name IN ('test_reports','test_report_evidence'))
+  UNION ALL SELECT 'R3.8',
+    'report_evidence.metadata_snapshot jsonb, nullable (TAD S6.6) + test mirror',
+    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
+               AND table_name='report_evidence' AND column_name='metadata_snapshot'
+               AND data_type='jsonb' AND is_nullable='YES') = 1
+              AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
+               AND table_name='test_report_evidence' AND column_name='metadata_snapshot'
+               AND data_type='jsonb') = 1
+         THEN 'PASS' ELSE 'FAIL' END,
+    (SELECT COALESCE(string_agg(table_name||'.'||column_name||':'||data_type
+                      ||CASE WHEN is_nullable='YES' THEN ' (nullable)' ELSE ' NOT NULL' END,
+                      ', ' ORDER BY table_name),'none') FROM information_schema.columns
+     WHERE table_schema='public' AND column_name='metadata_snapshot'
+       AND table_name IN ('report_evidence','test_report_evidence'))
   -- --------------------------------------------------------------------- R4 -
   UNION ALL SELECT 'R4.1',
     'audit_log: dashboard_admin_id/report_id/action/acted_at',
