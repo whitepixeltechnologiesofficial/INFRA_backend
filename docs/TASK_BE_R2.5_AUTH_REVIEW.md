@@ -294,13 +294,26 @@ The card's VERIFY step asks this note to state *"what, if anything, was fixed."*
 | # | Severity | Why not | Route |
 |---|---|---|---|
 | **F1** | HIGH | Requires a design decision on the WebSocket auth path, and `ws/` is also R2.6 territory. Fixing it here risks conflicting with that work. | Refer to Samson with the suggested design in F1. |
-| **F4** | MEDIUM | **Needs a migration.** Adding one from this branch would create a fourth numbering collision. See §6.1 — the exact DDL is written out and ready to apply. | Apply with BE-R2.1's coordinated schema pass. |
+| **F4** | MEDIUM | **Needs a migration.** `014`–`016` are now taken by R2.2–R2.4, so this one is reserved as `017` and deliberately left uncommitted rather than landing ahead of them. See §6.1 — the exact DDL is written out and ready to apply. | Apply with BE-R2.1's coordinated schema pass. |
 
 > **Correction to how F2 was originally characterised.** This note first described F2 as an exploitable cross-family token replay, and the fix as urgent. On closer checking that overstated it. `verifyAdminToken` already required an `adm` claim that an access token does not carry, and `verifyAccessToken` already required `deviceId` and `sid` that an admin token does not carry — so **both directions were already rejected before this change**. F2 was a genuine TAD §7.4 / §15.3 *compliance* gap, not a live vulnerability. The fix adds a standard claim and defence-in-depth against a future route that verifies a token without the bespoke claim checks. The `aud` assertions in `verify.ts` would have passed on the pre-fix code for the same reason, and are therefore regression guards rather than proof of a closed hole.
 
 ### 6.1 F4 — the migration, ready to apply
 
-Deliberately **not** committed as a migration file. BE-R2.1's `013` has not merged, and BE-R2.2, R2.3, and R2.4 already need renumbering to `014`–`016`. Adding a `014` from this branch would create a fourth collision. The sprint plan requires schema changes to land in one coordinated pass.
+Deliberately **not** committed as a migration file. `main` is still at `012`, so BE-R2.1's `013` has not merged, and the sprint plan requires schema changes to land in one coordinated pass rather than racing ahead of the other cards.
+
+> **Numbering note (updated 27 Sep 2026).** This section previously said R2.2–R2.4 "need renumbering to `014`–`016`" and that this card's migration would have to take `014`. **That renumbering has since happened.** The numbers are now allocated as follows, so **F4's migration must be `017`**:
+
+| Number | File | Card |
+|---|---|---|
+| `012` | `012_add_devices_signing_key.sql.sql` | on `main` |
+| `013` | `013_rename_message_relay_to_pending_messages.sql` | BE-R2.1 |
+| `014` | `014_add_report_evidence_metadata_snapshot.sql` | BE-R2.3 |
+| `015` | `015_add_report_columns.sql` | BE-R2.2 |
+| `016` | `016_scope_media_purge_to_bucket.sql` | BE-R2.4 |
+| **`017`** | **reserved for this finding** | **BE-R2.5** |
+
+Verified against the tip of each branch, not just `main`. Anyone applying F4 should confirm those branches have merged and re-read the tail of the sequence from the merged tree before claiming `017`, rather than trusting this table.
 
 The drift, precisely:
 
@@ -340,21 +353,29 @@ If either count is non-zero, **stop** — those rows need investigating before a
 
 Note the `DROP INDEX` is required: the existing non-unique index shares the name `sessions_token_lookup_idx`, and PostgreSQL will not create a unique index over an existing index of the same name.
 
+When this is committed, name the file **`017_sessions_token_lookup_unique.sql`** and follow the surrounding migrations' convention: idempotent guards (`IF EXISTS` / `IF NOT EXISTS`) plus a matching `ROLLBACK` block, since migrations here are applied by hand rather than by a migration runner.
+
 ### Verification performed after the fixes
+
+Re-run in full on 27 Sep 2026 at `HEAD` (`1cd0788`) to confirm the earlier results still hold. All reproduce:
 
 - `pnpm typecheck` — 4/4 packages pass.
 - `pnpm --filter @wpt/backend exec tsx src/auth/verify.ts` — **12/12 pass**, including 5 new `aud` assertions (claim present on both families, each family rejected by the other's verifier, each accepted by its own).
 - `pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts` — 13/13 pass, now running against the production constants (F7).
 - `eslint` on all seven changed `auth/` files — clean. `routes/onboarding.ts` reports 9 errors, all confirmed **pre-existing on `main`** and none introduced here; that file is not in this card's scope.
-- `legal-gate-test.ts` was **not executed**, so **F5's runtime behaviour is unverified**. The workspace has no database with the application schema applied: `apps/backend/.env` points at a Supabase project whose `public` schema is empty, and `legal_acceptances` does not exist there, so the test cannot run. F5 was merged on the basis of code review and typecheck only. See §8 for the recorded risk acceptance.
+- `legal-gate-test.ts` was **not executed**, so **F5's runtime behaviour is unverified**. Re-confirmed 27 Sep 2026: this environment cannot reach a database at all, so the test still cannot run. `apps/backend/.env` points at a Supabase pooler (`aws-0-ap-southeast-1.pooler.supabase.com:5432`) and **TCP 5432 times out to all three of its resolved addresses** — DNS resolves, the connection never establishes. There is no local PostgreSQL and no container runtime either, so no substitute target is available. F5 remains merged on the basis of code review and typecheck alone. See §8 for the recorded risk acceptance.
+
+> **Correction.** An earlier revision of this line stated that the Supabase project's `public` schema was empty and that `legal_acceptances` was missing there. **That was not established** — the host is unreachable, so nothing is known about its schema. Do not go looking for a missing table to create; the blocker is network reachability. Whoever closes this out needs an environment with either a local PostgreSQL or network access to the Supabase project, and should confirm the `legal_acceptances` table actually exists before running the test.
+
+**The test is not self-cleaning.** `legal-gate-test.ts` has no `DELETE` of any kind: it upserts a row for a throwaway phone number at step 3, rewrites that row at steps 6 and 7, and leaves it behind. The numbers are randomised per run (`+1555` plus a `Date.now()` slice, `legal-gate-test.ts:30-31`), so each execution silently adds rows to `legal_acceptances` and they accumulate. Run it against a throwaway database. If it is ever pointed at a shared or production database, the leftovers are `+1555…` rows and are safe to remove — but that cleanup is currently manual, and the test does not warn about it.
 
 ---
 
 ## 7. Limits of this review
 
-- **Static review only.** No runtime or penetration testing was performed. The test scripts in `auth/` were read, not executed — all five require a live `DATABASE_URL`, and no database with the application schema applied was reachable.
+- **Static review only.** No runtime or penetration testing was performed. The three test scripts in `auth/` (`e2e-test.ts`, `integration-test.ts`, `legal-gate-test.ts`) were read, not executed — all three require a live `DATABASE_URL`, and none is reachable (see the correction in §6).
 - **Scope was `auth/`.** Consumers were traced far enough to confirm F1 and F2, but `routes/admin.ts`, `routes/moderation.ts`, and `routes/debug.ts` were not themselves reviewed line-by-line.
-- **`verify.ts` and `verify-refresh.ts` are not tests.** They have no test framework and are not in any suite. `verify-refresh.ts` was executed after the F7 fix and passes 13/13 (see §6); `verify.ts` was read only.
+- **`verify.ts` and `verify-refresh.ts` are not tests.** They have no test framework and are not in any suite. Both have now been executed and pass 12/12 and 13/13 respectively (see §6). Neither needs a database — `verify-refresh.ts` simulates the lookup-and-compare flow in memory, so its 13/13 does **not** demonstrate the SQL in `refresh-token.ts` against a real database.
 - **Rate limiting was not assessed here.** It lives in `routes/onboarding.ts`, outside this folder, and is covered by rows 1–3 of §2 as a compliance check only.
 - **F4 still needs a migration.** It is the only remaining finding that changes the schema — `token_lookup` requires `NOT NULL` plus a `UNIQUE` index. It should be coordinated with BE-R2.1's schema work so the changes land in one coordinated pass, as the sprint plan requires. (F3 needed no migration and is fixed in this branch; see §6.)
 
@@ -374,7 +395,7 @@ This card carries a mandatory second sign-off. Both reviewers should confirm the
 ### Decisions taken (reviewer)
 
 - [x] Findings reviewed in full; F2, F3, F5, F6, F7, F8 remediated in this branch (§6)
-- [x] F4 documented with ready-to-apply DDL, deliberately not committed as a migration file to avoid a numbering collision with R2.2–R2.4 (§6.1)
+- [x] F4 documented with ready-to-apply DDL, deliberately not committed as a migration file; the renumbering it was waiting on has since landed, and F4 is reserved as `017` (§6.1)
 - [x] F1 left unfixed and referred rather than implemented, because it overlaps R2.6's WebSocket work
 
 ### Still outstanding before this card can close
