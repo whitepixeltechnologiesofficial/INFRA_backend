@@ -110,11 +110,18 @@ export type ValidatedSession = {
  *
  * Returns the session metadata on success — enough to mint a new
  * access token without an extra DB round-trip.
+ *
+ * @param dbParam optional Drizzle handle. Defaults to the shared `getDb()`
+ *   instance. Accepting an injected handle matches `issueRefreshToken` and
+ *   `revokeAllUserSessions`, and is what allows this function — the single
+ *   most security-critical check in the auth path — to be exercised in a test
+ *   against a real or stubbed database.
  */
 export async function validateRefreshToken(
   rawToken: string,
+  dbParam?: AppDb,
 ): Promise<ValidatedSession | null> {
-  const db = getDb();
+  const db = dbParam ?? getDb();
   const tokenLookup = lookupKey(rawToken);
   const now = new Date();
 
@@ -159,9 +166,15 @@ export async function validateRefreshToken(
  * Only revokes a session that is still active — the `isNull` guard
  * matches `revokeAllUserSessions` and preserves the original
  * `revoked_at` timestamp if this is called more than once.
+ *
+ * @param dbParam optional Drizzle handle. Defaults to the shared `getDb()`
+ *   instance, matching the other functions in this module.
  */
-export async function revokeSession(sessionId: string): Promise<void> {
-  const db = getDb();
+export async function revokeSession(
+  sessionId: string,
+  dbParam?: AppDb,
+): Promise<void> {
+  const db = dbParam ?? getDb();
 
   await db
     .update(sessions)

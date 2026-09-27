@@ -22,6 +22,7 @@ import {
   recordLegalAcceptance,
   requireLegalAcceptance,
   LegalAcceptanceRequiredError,
+  CURRENT_LEGAL_VERSION,
   // Card 1: JWT access token
   issueAccessToken,
   verifyAccessToken,
@@ -50,7 +51,7 @@ async function main() {
   const testPhone = `+1555${Date.now().toString().slice(-7)}`;
   const testUserId = `user_${Date.now()}`;
   const testDeviceId = `device_${Date.now()}`;
-  const legalVersion = "v1.0-2024-01-15";
+  const legalVersion = CURRENT_LEGAL_VERSION;
 
   console.log("=== E2E Test: All 3 Backend Cards ===\n");
   console.log(`Phone:      ${testPhone}`);

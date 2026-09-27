@@ -29,7 +29,7 @@ function assert(condition: boolean, label: string) {
 async function main() {
   const phoneA = `+1555${Date.now().toString().slice(-7)}`;
   const phoneB = `+1555${Date.now().toString().slice(-7)}9`;
-  const legalVersion = "v1.0-2024-01-15";
+  const legalVersion = CURRENT_LEGAL_VERSION;
 
   console.log(`Phone A: ${phoneA}`);
   console.log(`Phone B: ${phoneB}`);
