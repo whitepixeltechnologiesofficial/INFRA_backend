@@ -3,15 +3,14 @@
  * Run: pnpm --filter @wpt/backend exec tsx src/db/apply-migration.ts
  */
 
-import pg from "pg";
+import { createPool } from "./pool.js";
 
-const { Pool } = pg;
 
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL not set");
 
-  const pool = new Pool({ connectionString: url });
+  const pool = createPool({ connectionString: url });
 
   const sql = `
     CREATE TABLE IF NOT EXISTS "sessions" (

@@ -107,8 +107,8 @@ async function main() {
 
   // Check DB directly for duplicate rows
   console.log("\n4. Checking DB for duplicate rows...");
-  const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const { createPool } = await import("./pool.js");
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
   const res = await pool.query(
     'SELECT COUNT(*) as count FROM "public"."users" WHERE "phone_number" = $1',
     [NEW_NUMBER]

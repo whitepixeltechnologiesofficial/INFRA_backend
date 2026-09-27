@@ -10,7 +10,7 @@
  *   6. Verify DB state: otp_verifications row deleted, sms_outbox queued
  */
 
-import pg from "pg";
+import { createPool } from "./pool.js";
 
 const BASE = "http://localhost:4000/api/v1/onboarding";
 const TEST_PHONE = `+1555${String(Date.now()).slice(-7)}`;
@@ -56,7 +56,7 @@ async function main() {
 
   // ── 3. Check DB: otp_verifications row exists with hash ──
   console.log("\n3. Check DB: otp_verifications");
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
   const dbClient = await pool.connect();
   try {
     const otpRow = await dbClient.query(

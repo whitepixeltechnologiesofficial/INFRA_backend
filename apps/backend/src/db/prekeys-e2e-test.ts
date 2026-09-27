@@ -22,11 +22,10 @@ import {
   type KeyObject,
 } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import pg from "pg";
+import { createPool } from "./pool.js";
 import { createApp } from "../app.js";
 import { issueAccessToken } from "../auth/jwt.js";
 
-const { Pool } = pg;
 
 // ── tiny test harness ──
 let passed = 0;
@@ -71,7 +70,7 @@ function makeDeviceKeys() {
 async function main() {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) throw new Error("DATABASE_URL not set");
-  const pool = new Pool({ connectionString: dbUrl });
+  const pool = createPool({ connectionString: dbUrl });
 
   const t = await pool.query(
     `SELECT to_regclass('public.one_time_prekeys') AS a, to_regclass('public.signed_prekeys') AS b`,

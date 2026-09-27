@@ -1,4 +1,4 @@
-import pg from "pg";
+import { createPool } from "./pool.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -16,7 +16,6 @@ try {
   }
 } catch { /* .env not found — rely on shell env */ }
 
-const { Pool } = pg;
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -25,7 +24,7 @@ async function main() {
     process.exit(1);
   }
   console.log(`Connecting to: ${url.replace(/\/\/[^:]+:[^@]+@/, "//***:***@")}`);
-  const pool = new Pool({ connectionString: url });
+  const pool = createPool({ connectionString: url });
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "public"."users" (

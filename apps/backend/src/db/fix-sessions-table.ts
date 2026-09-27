@@ -1,8 +1,16 @@
-import pg from "pg";
-const { Pool } = pg;
+import "dotenv/config";
+import { assertDestructiveAllowed } from "./guard.js";
+import { createPool } from "./pool.js";
+
+const STATEMENTS = [
+  'DROP TABLE IF EXISTS "public"."sessions" CASCADE',
+  'CREATE TABLE "public"."sessions" (...)',
+];
 
 async function main() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  assertDestructiveAllowed("fix-sessions-table", STATEMENTS);
+
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
 
   // Drop the incorrectly-created table
   await pool.query('DROP TABLE IF EXISTS "public"."sessions" CASCADE');

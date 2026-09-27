@@ -1,8 +1,16 @@
-import pg from "pg";
-const { Pool } = pg;
+import "dotenv/config";
+import { assertDestructiveAllowed } from "./guard.js";
+import { createPool } from "./pool.js";
+
+const STATEMENTS = [
+  'DROP TABLE IF EXISTS "public"."legal_acceptances" CASCADE  (destroys the consent audit trail)',
+  'CREATE TABLE IF NOT EXISTS "public"."legal_acceptances" (...)',
+];
 
 async function main() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  assertDestructiveAllowed("migrate-legal-acceptances", STATEMENTS);
+
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
 
   await pool.query('DROP TABLE IF EXISTS "public"."legal_acceptances" CASCADE');
 
