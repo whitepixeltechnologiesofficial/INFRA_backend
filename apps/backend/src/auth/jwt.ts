@@ -8,8 +8,10 @@
  * Token properties:
  *   Algorithm  : HS256 (symmetric, fast, adequate for short-lived tokens)
  *   Expiry     : exactly 1 hour — bounds worst-case kill-switch latency
- *   Claims     : sub (UserId), deviceId, sid (session ID for revocation)
+ *   Claims     : sub (UserId), deviceId, sid (session ID for revocation),
+ *                aud ("app") — see TAD §7.4 / §15.3
  *   Verification: `verifyAccessToken` decodes + validates signature + exp
+ *                + iss + aud
  */
 
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
@@ -19,6 +21,16 @@ import type { AccessTokenPayload, IssueAccessTokenParams } from "./types.js";
 const ACCESS_TOKEN_EXPIRY = "1h";
 
 const ISSUER = "wpt-backend";
+
+/**
+ * Token audiences (TAD §7.4, §15.3).
+ *
+ * The two token families must not be interchangeable: an end-user access
+ * token must never authenticate a dashboard request, or vice versa. `aud`
+ * is what enforces that at the verification boundary.
+ */
+export const AUDIENCE_APP = "app";
+export const AUDIENCE_DASHBOARD = "dashboard";
 
 /** HS256 needs at least 256 bits of key material (RFC 7518 §3.2). */
 const MIN_SECRET_BYTES = 32;
@@ -58,6 +70,7 @@ export async function issueAccessToken({
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(userId)
     .setIssuer(ISSUER)
+    .setAudience(AUDIENCE_APP)
     .setIssuedAt()
     .setExpirationTime(ACCESS_TOKEN_EXPIRY)
     .sign(secret);
@@ -72,8 +85,11 @@ export async function issueAccessToken({
  *   - Signature (HS256 against JWT_SECRET)
  *   - Expiry (`exp` claim)
  *   - Issuer (`iss` claim)
+ *   - Audience (`aud` claim must be `app`) — rejects a dashboard token
+ *     presented as a user access token
  *
- * @throws on any verification failure (expired, tampered, wrong issuer).
+ * @throws on any verification failure (expired, tampered, wrong issuer,
+ *   or wrong audience).
  */
 export async function verifyAccessToken(
   token: string,
@@ -82,6 +98,7 @@ export async function verifyAccessToken(
 
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
+    audience: AUDIENCE_APP,
     // Pin the algorithm — reject alg:none / RS256→HS256 confusion tokens.
     algorithms: ["HS256"],
   });
@@ -133,7 +150,9 @@ function toAccessTokenPayload(raw: JWTPayload): AccessTokenPayload {
 // claim (verifying they are dashboard staff) and no deviceId/sid
 // claims (they are not an end-user device session). The secret and
 // issuer are the same so the sign/verify plumbing is shared, but
-// the token shape is separate from the user access token.
+// the token shape is separate from the user access token — and the
+// `aud` claim ("dashboard" vs "app") keeps the two families from being
+// replayed against each other's endpoints.
 // ─────────────────────────────────────────────────────────────
 
 /** Issue a signed JWT for a dashboard admin. */
@@ -147,6 +166,7 @@ export async function issueAdminToken(
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(adminId)
     .setIssuer(ISSUER)
+    .setAudience(AUDIENCE_DASHBOARD)
     .setIssuedAt()
     .setExpirationTime(expiresIn)
     .sign(secret);
@@ -154,7 +174,12 @@ export async function issueAdminToken(
   return token;
 }
 
-/** Verify an admin token. Returns the adminId (sub) on success. */
+/**
+ * Verify an admin token. Returns the adminId (sub) on success.
+ *
+ * The `aud` check rejects an end-user access token being replayed against a
+ * dashboard endpoint, which the shared secret alone would not prevent.
+ */
 export async function verifyAdminToken(
   token: string,
 ): Promise<{ adminId: string }> {
@@ -162,6 +187,7 @@ export async function verifyAdminToken(
 
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
+    audience: AUDIENCE_DASHBOARD,
     algorithms: ["HS256"],
   });
 

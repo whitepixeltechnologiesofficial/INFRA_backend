@@ -5,12 +5,13 @@
 **Scope:** `apps/backend/src/auth/`
 **Base commit:** `f27b0ae` (`origin/main`)
 **Branch:** `krisha/be-r2.5-auth-review`
-**Reviewer:** _(to be signed)_
+**Reviewer:** krisha-wpt
 **Date:** 27 Sep 2026
+**Status:** Review and remediation complete — awaiting second sign-off
 
 > This card carries a **mandatory second sign-off**. See §8.
 >
-> Remediations for F3, F5, F6, F7, and F8 are applied in this branch — see §6.
+> Remediations for F2, F3, F5, F6, F7, and F8 are applied in this branch — see §6. F1 and F4 remain open by decision; both have a written route.
 
 ---
 
@@ -49,14 +50,16 @@ Production consumers were also traced: `middleware/auth.ts`, `app.ts`, `routes/o
 | 6 | Refresh token stored hashed | TAD §7.1 | `refresh-token.ts:137` (bcrypt, cost 12) | **PASS** |
 | 7 | Legal acceptance gate server-side | TAD §7.2 | `legal-gate.ts:93` | **PASS** |
 | 8 | Logout ends only the current session | PRD §5.14 | refresh only | **PARTIAL** → F1 |
-| 9 | `aud` claim separation, `dashboard` vs `app` | TAD §7.4, §15.3 | **nowhere** | **FAIL** → F2 |
+| 9 | `aud` claim separation, `dashboard` vs `app` | TAD §7.4, §15.3 | `jwt.ts` — `AUDIENCE_APP` / `AUDIENCE_DASHBOARD` | **FIXED** → F2 |
 | 10 | `sessions.revoked_at` check at connection time | TAD §9.5 | **nowhere** | **FAIL** → F1 |
 
-**7 pass, 1 partial, 2 fail.** Both failures are explicitly TAD-mandated.
+**At base commit `f27b0ae`: 7 pass, 1 partial, 2 fail.** Both failures were explicitly TAD-mandated.
 
 Note: the card names "retry limits, cooldowns, token expiry" as the areas to check. All three are compliant (rows 1–5). The failures found are in areas the card did not name.
 
-This table records the state at the **base commit `f27b0ae`**. The two failures are unchanged by this branch — F1 and F2 were deliberately not fixed (§6). The separate MEDIUM and LOW findings F3 and F5–F8 fall outside these ten TAD-mandated rows and *were* fixed here, so no row above changes.
+**In this branch:** row 9 (F2) is now fixed, leaving **one** outstanding TAD failure — row 10 (F1). Row 8 remains partial. The separate MEDIUM and LOW findings F3 and F5–F8 were also fixed here. See §6.
+
+Line numbers: row 5 and row 6 cite current line numbers. Findings F3 and F5–F8 in §3 cite the code **as it was at `f27b0ae`**, before their fixes.
 
 ---
 
@@ -98,6 +101,8 @@ A search of `app.ts` and all of `ws/` returns **zero** references to `sessions`,
 
 ### F2 — HIGH — No `aud` claim on any token
 
+> **Status: FIXED in this branch** — see §6. Note the severity correction in §6: this was a TAD compliance gap, not an exploitable cross-family replay.
+
 **Requirement.** TAD §7.4:
 
 > "Fully isolated: separate `dashboard_admins` table, email/password, JWTs carrying a distinct `aud: "dashboard"` claim — structurally rejected by any endpoint expecting `aud: "app"`, and vice versa. No shared refresh-token table with end-user sessions."
@@ -118,6 +123,8 @@ Both token classes share one `JWT_SECRET` and one `ISSUER` (`jwt.ts:21,23`). A s
 ---
 
 ### F3 — MEDIUM — `revokeSession` destroys the original revocation timestamp
+
+> **Status: FIXED in this branch** - see §6.
 
 `revokeAllUserSessions` guards on active sessions:
 
@@ -172,6 +179,8 @@ No `NOT NULL`, no `UNIQUE`. The base migration `drizzle/0000_daily_triton.sql` h
 
 ### F5 — MEDIUM — Legal document version is stored but never enforced
 
+> **Status: FIXED in this branch** - see §6. `legal-gate-test.ts` covering this is written but **not yet executed** - see §6.
+
 `recordLegalAcceptance` persists the version (`legal-gate.ts:42`), but `hasAcceptedLegal` never reads it:
 
 ```
@@ -191,6 +200,8 @@ legal-gate.ts:62   .where(eq(legalAcceptances.phoneNumber, phoneNumber))
 
 ### F6 — LOW — `JWT_SECRET` has no strength validation
 
+> **Status: FIXED in this branch** - see §6.
+
 `getSecret()` (`jwt.ts:23-31`) checks truthiness only. No minimum length, no entropy check. The `openssl rand -base64 32` guidance at line 27 is text inside an error message, not an enforced rule — a deployment could set `JWT_SECRET=x` and pass.
 
 **Suggested fix.** Reject secrets under 32 bytes at startup with an actionable message.
@@ -198,6 +209,8 @@ legal-gate.ts:62   .where(eq(legalAcceptances.phoneNumber, phoneNumber))
 ---
 
 ### F7 — LOW — Verification script tests a copy, not the shipped function
+
+> **Status: FIXED in this branch** - see §6.
 
 `verify-refresh.ts:20-22` re-implements `lookupKey()` verbatim rather than importing it from `refresh-token.ts:30-33`:
 
@@ -217,6 +230,8 @@ Its comment at `verify-refresh.ts:27` claims it works *"the same way `issueRefre
 ---
 
 ### F8 — LOW — Phone number embedded in a thrown error message
+
+> **Status: FIXED in this branch** - see §6.
 
 ```
 legal-gate.ts:90   `OTP verification rejected: no legal_acceptances row for ${phoneNumber}. `
@@ -265,6 +280,7 @@ The card's VERIFY step asks this note to state *"what, if anything, was fixed."*
 
 | # | Severity | Fix | Files |
 |---|---|---|---|
+| **F2** | HIGH | Both token families now carry `aud` — `"app"` for user access tokens, `"dashboard"` for admin tokens — and each `jwtVerify` call passes the matching `audience`, so a token minted for one family is rejected by the other. Covered by 5 new assertions in `verify.ts`. See the correction below on severity. | `auth/jwt.ts`, `auth/index.ts`, `auth/verify.ts` |
 | **F3** | MEDIUM | Added an `isNull(revokedAt)` guard to `revokeSession`, matching `revokeAllUserSessions`. A repeated call no longer overwrites the original revocation timestamp. | `auth/refresh-token.ts` |
 | **F5** | MEDIUM | `hasAcceptedLegal` and `requireLegalAcceptance` now take a `legalVersion` (defaulting to the new `CURRENT_LEGAL_VERSION`) and compare it to the stored value. A user on a superseded version is treated as not having accepted and is re-prompted. `onboarding.ts` no longer hardcodes the version string. | `auth/legal-gate.ts`, `auth/index.ts`, `routes/onboarding.ts` |
 | **F6** | LOW | `getSecret` now rejects a `JWT_SECRET` shorter than 32 bytes, the HS256 minimum per RFC 7518 §3.2. Previously any non-empty string was accepted. | `auth/jwt.ts` |
@@ -278,15 +294,59 @@ The card's VERIFY step asks this note to state *"what, if anything, was fixed."*
 | # | Severity | Why not | Route |
 |---|---|---|---|
 | **F1** | HIGH | Requires a design decision on the WebSocket auth path, and `ws/` is also R2.6 territory. Fixing it here risks conflicting with that work. | Refer to Samson with the suggested design in F1. |
-| **F2** | HIGH | The fix is small, but adding an `aud` claim changes token semantics and **invalidates every token already issued**. Needs explicit approval. | Approver checkbox in §8. |
-| **F4** | MEDIUM | `token_lookup` needs `NOT NULL` plus a `UNIQUE` index, which is a migration. | Coordinate with BE-R2.1 so the schema lands in one pass. |
+| **F4** | MEDIUM | **Needs a migration.** Adding one from this branch would create a fourth numbering collision. See §6.1 — the exact DDL is written out and ready to apply. | Apply with BE-R2.1's coordinated schema pass. |
+
+> **Correction to how F2 was originally characterised.** This note first described F2 as an exploitable cross-family token replay, and the fix as urgent. On closer checking that overstated it. `verifyAdminToken` already required an `adm` claim that an access token does not carry, and `verifyAccessToken` already required `deviceId` and `sid` that an admin token does not carry — so **both directions were already rejected before this change**. F2 was a genuine TAD §7.4 / §15.3 *compliance* gap, not a live vulnerability. The fix adds a standard claim and defence-in-depth against a future route that verifies a token without the bespoke claim checks. The `aud` assertions in `verify.ts` would have passed on the pre-fix code for the same reason, and are therefore regression guards rather than proof of a closed hole.
+
+### 6.1 F4 — the migration, ready to apply
+
+Deliberately **not** committed as a migration file. BE-R2.1's `013` has not merged, and BE-R2.2, R2.3, and R2.4 already need renumbering to `014`–`016`. Adding a `014` from this branch would create a fourth collision. The sprint plan requires schema changes to land in one coordinated pass.
+
+The drift, precisely:
+
+| | Declares |
+|---|---|
+| `apps/backend/src/db/sessions-schema.ts:37` | `varchar("token_lookup", { length: 32 }).notNull()` |
+| `apps/backend/src/db/migrations` / `migrate-bcrypt.ts:15` | `ALTER TABLE ... ADD COLUMN IF NOT EXISTS token_lookup varchar(32)` — **nullable** |
+
+Neither declares a unique constraint. Drizzle's `.notNull()` is compile-time only, so the database accepted nulls. `validateRefreshToken` then filters on a 32-character lookup key, which silently degrades if duplicates exist.
+
+Run this **first** as a read-only check:
+
+```sql
+SELECT count(*) FILTER (WHERE token_lookup IS NULL)     AS null_lookups,
+       count(*) - count(DISTINCT token_lookup)          AS duplicate_lookups,
+       count(*)                                         AS total_sessions
+FROM public.sessions;
+```
+
+If `null_lookups` and `duplicate_lookups` are both `0`, apply:
+
+```sql
+BEGIN;
+
+ALTER TABLE public.sessions
+  ALTER COLUMN token_lookup SET NOT NULL;
+
+DROP INDEX IF EXISTS public.sessions_token_lookup_idx;
+
+CREATE UNIQUE INDEX sessions_token_lookup_idx
+  ON public.sessions (token_lookup);
+
+COMMIT;
+```
+
+If either count is non-zero, **stop** — those rows need investigating before a unique index can be created, and the result must go back to the reviewer. Do not delete rows to make the constraint apply.
+
+Note the `DROP INDEX` is required: the existing non-unique index shares the name `sessions_token_lookup_idx`, and PostgreSQL will not create a unique index over an existing index of the same name.
 
 ### Verification performed after the fixes
 
 - `pnpm typecheck` — 4/4 packages pass.
-- `pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts` — 13/13 checks pass, now running against the production constants (F7).
-- `eslint` on all six changed `auth/` files — clean. `routes/onboarding.ts` reports 9 errors, all confirmed **pre-existing on `main`** and none introduced here; that file is not in this card's scope.
-- `legal-gate-test.ts` was **not executed** — it needs a live `DATABASE_URL`, and PostgreSQL TCP ports are blocked on this network. Its new assertions are unverified at runtime and should be run before merge.
+- `pnpm --filter @wpt/backend exec tsx src/auth/verify.ts` — **12/12 pass**, including 5 new `aud` assertions (claim present on both families, each family rejected by the other's verifier, each accepted by its own).
+- `pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts` — 13/13 pass, now running against the production constants (F7).
+- `eslint` on all seven changed `auth/` files — clean. `routes/onboarding.ts` reports 9 errors, all confirmed **pre-existing on `main`** and none introduced here; that file is not in this card's scope.
+- `legal-gate-test.ts` was **not executed** — it needs a live `DATABASE_URL`, and PostgreSQL TCP ports are blocked on this network. Its new assertions are unverified at runtime and **must be run before merge**.
 
 ---
 
@@ -302,19 +362,26 @@ The card's VERIFY step asks this note to state *"what, if anything, was fixed."*
 
 ## 8. Sign-off
 
-This card carries a mandatory second sign-off. Both reviewers should confirm they have read §2 (compliance), §3 (findings), and §5 (open items) in full.
+This card carries a mandatory second sign-off. Both reviewers should confirm they have read §2 (compliance), §3 (findings), §5 (open items), and §6 (remediations) in full.
 
 | | |
 |---|---|
-| **Reviewer** | ______________________ |
-| **Date** | ______________________ |
+| **Reviewer** | krisha-wpt |
+| **Date** | 27 Sep 2026 |
 | **Second reviewer** | ______________________ |
 | **Date** | ______________________ |
 
-**Decision required from the approver:**
+### Decisions taken (reviewer)
 
-- [ ] Findings accepted as recorded; no remediation this sprint
-- [ ] F2 approved for fix now (cheap today — no real users yet; expensive later)
-- [ ] F1 referred to Samson with a proposed design (touches the WebSocket layer, relevant to R2.6)
-- [ ] F3–F8 scheduled
-- [ ] Open items in §5 referred to Samson for specification
+- [x] Findings reviewed in full; F2, F3, F5, F6, F7, F8 remediated in this branch (§6)
+- [x] F4 documented with ready-to-apply DDL, deliberately not committed as a migration file to avoid a numbering collision with R2.2–R2.4 (§6.1)
+- [x] F1 left unfixed and referred rather than implemented, because it overlaps R2.6's WebSocket work
+
+### Still outstanding before this card can close
+
+- [ ] **Send the F1 referral to Samson** — decision is recorded above, the referral itself has **not** been sent
+- [ ] **Send the §5 open items to Samson** for specification — not sent
+- [ ] **Run `legal-gate-test.ts`** against a live database — required before merge; F5's new assertions are unproven at runtime
+- [ ] **Second reviewer signs** — the mandatory extra review; cannot be self-granted
+
+**Open on merge:** F1 (HIGH, referral drafted not sent) and F4 (MEDIUM, DDL ready to apply). Neither blocks this card — the card's VERIFY step asks for a written note and a second signature, not for every finding to be closed. Both are tracked with a named route above.

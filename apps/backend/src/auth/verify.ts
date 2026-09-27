@@ -4,11 +4,21 @@
  * Issues a token, decodes it, and confirms:
  *   1. Expiry is exactly 1 hour from issuance
  *   2. Claims are sufficient to identify user + device without a DB round-trip
+ *   3. `aud` is present on both token families and the two are not
+ *      interchangeable (TAD 7.4 / 15.3)
  *
  * Run:  JWT_SECRET=test-secret pnpm --filter @wpt/backend exec tsx src/auth/verify.ts
  */
 
-import { issueAccessToken, verifyAccessToken, decodeAccessTokenUnsafe } from "./jwt.js";
+import {
+  issueAccessToken,
+  verifyAccessToken,
+  decodeAccessTokenUnsafe,
+  issueAdminToken,
+  verifyAdminToken,
+  AUDIENCE_APP,
+  AUDIENCE_DASHBOARD,
+} from "./jwt.js";
 
 const TEST_SECRET = "test-secret-for-verification-only";
 process.env.JWT_SECRET = TEST_SECRET;
@@ -91,6 +101,56 @@ async function main() {
     checks.push(`PASS  exp - iat = ${duration}s (exactly 1 hour)`);
   } else {
     checks.push(`FAIL  exp - iat = ${duration}s (expected 3600)`);
+  }
+
+  // 8. aud is present and correct (TAD 7.4 / 15.3)
+  if (decoded.aud === AUDIENCE_APP) {
+    checks.push(`PASS  aud="${AUDIENCE_APP}" present on the access token`);
+  } else {
+    checks.push(`FAIL  aud is "${decoded.aud}", expected "${AUDIENCE_APP}"`);
+  }
+
+  // 9. The two token families are not interchangeable. Both are signed with
+  //    the same secret and issuer, so without `aud` an access token would
+  //    pass verifyAdminToken. This is the check that makes `aud` load-bearing.
+  const adminToken = await issueAdminToken("admin_abc123");
+  const decodedAdmin = decodeAccessTokenUnsafe(adminToken);
+  if (decodedAdmin.aud === AUDIENCE_DASHBOARD) {
+    checks.push(`PASS  aud="${AUDIENCE_DASHBOARD}" present on the admin token`);
+  } else {
+    checks.push(`FAIL  admin aud is "${decodedAdmin.aud}", expected "${AUDIENCE_DASHBOARD}"`);
+  }
+
+  let accessTokenRejectedAsAdmin = false;
+  try {
+    await verifyAdminToken(token);
+  } catch {
+    accessTokenRejectedAsAdmin = true;
+  }
+  checks.push(
+    accessTokenRejectedAsAdmin
+      ? "PASS  access token REJECTED by verifyAdminToken (aud enforced)"
+      : "FAIL  access token ACCEPTED by verifyAdminToken - aud not enforced",
+  );
+
+  let adminTokenRejectedAsUser = false;
+  try {
+    await verifyAccessToken(adminToken);
+  } catch {
+    adminTokenRejectedAsUser = true;
+  }
+  checks.push(
+    adminTokenRejectedAsUser
+      ? "PASS  admin token REJECTED by verifyAccessToken (aud enforced)"
+      : "FAIL  admin token ACCEPTED by verifyAccessToken - aud not enforced",
+  );
+
+  // 10. Each token still verifies against its own audience.
+  const verifiedAdmin = await verifyAdminToken(adminToken);
+  if (verifiedAdmin.adminId === "admin_abc123") {
+    checks.push("PASS  admin token verifies against its own audience");
+  } else {
+    checks.push(`FAIL  admin sub is "${verifiedAdmin.adminId}"`);
   }
 
   console.log("\n=== Verification results ===");
