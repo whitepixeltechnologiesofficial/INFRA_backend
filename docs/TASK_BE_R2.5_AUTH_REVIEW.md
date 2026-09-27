@@ -45,7 +45,7 @@ Production consumers were also traced: `middleware/auth.ts`, `app.ts`, `routes/o
 | 1 | OTP max 3 attempts | PRD §5.2 | `onboarding.ts:259` | **PASS** |
 | 2 | 30-second input lockout after 3 failures | PRD §5.2, Sc. 1.8 | `onboarding.ts:51` | **PASS** |
 | 3 | 30-second resend cooldown | PRD §5.2, Sc. 1.9 | `onboarding.ts:52,279` | **PASS** |
-| 4 | Access token lifetime 1 hour | TAD §7.1, §22 item 20 | `jwt.ts:19` | **PASS** |
+| 4 | Access token lifetime 1 hour | TAD §7.1, §22 item 20 | `jwt.ts:21` | **PASS** |
 | 5 | Refresh token lifetime 30 days | TAD §7.1, §22 item 20 | `refresh-token.ts:31` | **PASS** |
 | 6 | Refresh token stored hashed | TAD §7.1 | `refresh-token.ts:137` (bcrypt, cost 12) | **PASS** |
 | 7 | Legal acceptance gate server-side | TAD §7.2 | `legal-gate.ts:93` | **PASS** |
@@ -59,13 +59,13 @@ Note: the card names "retry limits, cooldowns, token expiry" as the areas to che
 
 **In this branch:** row 9 (F2) is now fixed, leaving **one** outstanding TAD failure — row 10 (F1). Row 8 remains partial. The separate MEDIUM and LOW findings F3 and F5–F8 were also fixed here. See §6.
 
-Line numbers: row 5 and row 6 cite current line numbers. Findings F3 and F5–F8 in §3 cite the code **as it was at `f27b0ae`**, before their fixes.
+Line numbers: the §2 table and F1 cite **current** line numbers. Findings F2 and F3 and F5–F8 in §3 describe defects that have since been **fixed here**, so their line numbers refer to the code **at `f27b0ae`**, before the fix.
 
 ---
 
 ## 3. Findings
 
-> **How to read the line numbers in this section.** F1 and F2 cite code that is unchanged in this branch, so their references are live. F3 and F5–F8 describe defects that have since been **fixed here** (§6), so their line numbers refer to the code **at base commit `f27b0ae`**, before the fix. To re-check one, use `git show f27b0ae:apps/backend/src/auth/<file>`. The §2 table has been updated to current line numbers.
+> **How to read the line numbers in this section.** F1 cites code that is unchanged in this branch, so its references are live against `HEAD`. F2's "Actual state" and "Impact" paragraphs, and findings F3 and F5–F8, all describe defects that have since been **fixed here** (§6), so their line numbers refer to the code **at base commit `f27b0ae`**, *before* the fix — several of them point at entirely different lines at `HEAD`. To re-check one, use `git show f27b0ae:apps/backend/src/auth/<file>`. The §2 table and F1 have been updated to current line numbers.
 
 ### F1 — HIGH — No `revoked_at` check at WebSocket connection
 
@@ -91,9 +91,9 @@ app.ts:96   if (typeof payload.deviceId === "string" && payload.deviceId !== dev
 
 A search of `app.ts` and all of `ws/` returns **zero** references to `sessions`, `revokedAt`, `revoked_at`, `getDb`, or `validateRefreshToken`. There is no session lookup anywhere in the WebSocket layer, and no resume path is implemented.
 
-**Impact.** The "near-instant for connected devices" guarantee is not met. A socket authenticated before a force-logout stays connected and keeps receiving messages after revocation. The `sid` claim is written at `jwt.ts:47` and declared in `types.ts`, but nothing reads it back.
+**Impact.** The "near-instant for connected devices" guarantee is not met. A socket authenticated before a force-logout stays connected and keeps receiving messages after revocation. The `sid` claim is written at `jwt.ts:68` and declared at `types.ts:20`, but nothing reads it back.
 
-**Important distinction — this is *not* a 1-hour-token defect.** TAD §7.1 explicitly accepts a worst-case 1-hour delay for devices the real-time kill-switch cannot reach, and the 1-hour expiry at `jwt.ts:19` is the intended mitigation. The gap is specifically the **connection-time check**, which the TAD requires in addition to the expiry bound.
+**Important distinction — this is *not* a 1-hour-token defect.** TAD §7.1 explicitly accepts a worst-case 1-hour delay for devices the real-time kill-switch cannot reach, and the 1-hour expiry at `jwt.ts:21` is the intended mitigation. The gap is specifically the **connection-time check**, which the TAD requires in addition to the expiry bound.
 
 **Suggested fix.** Query `sessions` on connect and reject if `revoked_at IS NOT NULL`. Add the §7.3 resume-time check for reconnect. Owner decision required — touches the WebSocket layer, which is listed for R2.6.
 
@@ -346,13 +346,13 @@ Note the `DROP INDEX` is required: the existing non-unique index shares the name
 - `pnpm --filter @wpt/backend exec tsx src/auth/verify.ts` — **12/12 pass**, including 5 new `aud` assertions (claim present on both families, each family rejected by the other's verifier, each accepted by its own).
 - `pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts` — 13/13 pass, now running against the production constants (F7).
 - `eslint` on all seven changed `auth/` files — clean. `routes/onboarding.ts` reports 9 errors, all confirmed **pre-existing on `main`** and none introduced here; that file is not in this card's scope.
-- `legal-gate-test.ts` was **not executed** — it needs a live `DATABASE_URL`, and PostgreSQL TCP ports are blocked on this network. Its new assertions are unverified at runtime and **must be run before merge**.
+- `legal-gate-test.ts` was **not executed**, so **F5's runtime behaviour is unverified**. The workspace has no database with the application schema applied: `apps/backend/.env` points at a Supabase project whose `public` schema is empty, and `legal_acceptances` does not exist there, so the test cannot run. F5 was merged on the basis of code review and typecheck only. See §8 for the recorded risk acceptance.
 
 ---
 
 ## 7. Limits of this review
 
-- **Static review only.** No runtime or penetration testing was performed. The test scripts in `auth/` were read, not executed — all five require a live `DATABASE_URL`, and the workspace has no reachable database (PostgreSQL TCP ports are blocked on this network).
+- **Static review only.** No runtime or penetration testing was performed. The test scripts in `auth/` were read, not executed — all five require a live `DATABASE_URL`, and no database with the application schema applied was reachable.
 - **Scope was `auth/`.** Consumers were traced far enough to confirm F1 and F2, but `routes/admin.ts`, `routes/moderation.ts`, and `routes/debug.ts` were not themselves reviewed line-by-line.
 - **`verify.ts` and `verify-refresh.ts` are not tests.** They have no test framework and are not in any suite. `verify-refresh.ts` was executed after the F7 fix and passes 13/13 (see §6); `verify.ts` was read only.
 - **Rate limiting was not assessed here.** It lives in `routes/onboarding.ts`, outside this folder, and is covered by rows 1–3 of §2 as a compliance check only.
@@ -381,7 +381,7 @@ This card carries a mandatory second sign-off. Both reviewers should confirm the
 
 - [ ] **Send the F1 referral to Samson** — decision is recorded above, the referral itself has **not** been sent
 - [ ] **Send the §5 open items to Samson** for specification — not sent
-- [ ] **Run `legal-gate-test.ts`** against a live database — required before merge; F5's new assertions are unproven at runtime
+- [ ] **Second reviewer accepts that F5 ships unverified** — the legal-version gate was merged on code review and typecheck alone, with no runtime test. Known residual risk: if any existing `legal_acceptances` row stores a `legal_version` other than `v1.0-2024-01-15`, that user fails the gate at their next OTP verification. Recovery depends on the client rendering the accept-legal screen before OTP verify, which the gate's design assumes but which is untested.
 - [ ] **Second reviewer signs** — the mandatory extra review; cannot be self-granted
 
 **Open on merge:** F1 (HIGH, referral drafted not sent) and F4 (MEDIUM, DDL ready to apply). Neither blocks this card — the card's VERIFY step asks for a written note and a second signature, not for every finding to be closed. Both are tracked with a named route above.
