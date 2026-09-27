@@ -250,7 +250,7 @@ router.post("/send", async (req: Request, res: Response) => {
       });
 
     res.json({ success: true, count: 1, rows: [row] });
-  } catch (err) {
+  } catch {
     console.error("POST /relay/send error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -314,7 +314,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         expiresAt: r.expiresAt,
       })),
     });
-  } catch (err) {
+  } catch {
     console.error("POST /relay/poll error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -353,7 +353,7 @@ router.post("/ack", async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, messageId: updated.id, deliveredAt: updated.deliveredAt });
-  } catch (err) {
+  } catch {
     console.error("POST /relay/ack error");
     res.status(500).json({ error: "Internal server error" });
   }

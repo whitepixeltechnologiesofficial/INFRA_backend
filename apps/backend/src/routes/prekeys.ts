@@ -174,7 +174,7 @@ router.post("/upload", async (req: Request, res: Response) => {
       }
     }
 
-    let otps: { keyId: number; publicKey: string }[] = [];
+    const otps: { keyId: number; publicKey: string }[] = [];
     if (otpInput !== undefined) {
       if (
         !Array.isArray(otpInput) ||
