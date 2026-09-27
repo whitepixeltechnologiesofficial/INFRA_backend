@@ -7,7 +7,14 @@
  *   3. `aud` is present on both token families and the two are not
  *      interchangeable (TAD 7.4 / 15.3)
  *
- * Run:  JWT_SECRET=test-secret pnpm --filter @wpt/backend exec tsx src/auth/verify.ts
+ * Run:  pnpm --filter @wpt/backend exec tsx src/auth/verify.ts
+ *
+ * Both signing keys are set by this script rather than read from .env, so the
+ * checks are self-contained and cannot be influenced by whatever happens to be
+ * in the developer's environment. They are deliberately DIFFERENT values, which
+ * is what makes the "the two token families are not interchangeable" check
+ * meaningful: if the implementation regressed to a single shared key, the
+ * cross-family rejection below would start failing.
  */
 
 import {
@@ -21,7 +28,9 @@ import {
 } from "./jwt.js";
 
 const TEST_SECRET = "test-secret-for-verification-only";
+const TEST_ADMIN_SECRET = "test-admin-secret-verification-only";
 process.env.JWT_SECRET = TEST_SECRET;
+process.env.DASHBOARD_JWT_SECRET = TEST_ADMIN_SECRET;
 
 const TEST_USER_ID = "user_abc123";
 const TEST_DEVICE_ID = "device_xyz789";

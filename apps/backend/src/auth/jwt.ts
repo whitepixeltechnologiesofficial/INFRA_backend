@@ -35,20 +35,38 @@ export const AUDIENCE_DASHBOARD = "dashboard";
 /** HS256 needs at least 256 bits of key material (RFC 7518 §3.2). */
 const MIN_SECRET_BYTES = 32;
 
-function getSecret(): Uint8Array {
-  const secret = process.env.JWT_SECRET;
+function readSecret(envVar: string, hint: string): Uint8Array {
+  const secret = process.env[envVar];
   if (!secret) {
     throw new Error(
-      "JWT_SECRET is not set. Generate one with: openssl rand -base64 32",
+      `${envVar} is not set (required for ${hint}). ` +
+        `Generate one with: openssl rand -base64 32`,
     );
   }
   if (new TextEncoder().encode(secret).byteLength < MIN_SECRET_BYTES) {
     throw new Error(
-      `JWT_SECRET is too short — it must be at least ${MIN_SECRET_BYTES} bytes ` +
-        `for HS256. Generate one with: openssl rand -base64 32`,
+      `${envVar} is too short — it must be at least ${MIN_SECRET_BYTES} bytes ` +
+        `for HS256 (required for ${hint}). ` +
+        `Generate one with: openssl rand -base64 32`,
     );
   }
   return new TextEncoder().encode(secret);
+}
+
+function getSecret(): Uint8Array {
+  return readSecret("JWT_SECRET", "app tokens");
+}
+
+/**
+ * Admin tokens are signed with a SEPARATE key (TAD §7.4 "fully isolated").
+ *
+ * Previously both families called the same `getSecret()`, so a single
+ * JWT_SECRET leak would let an attacker mint both an end-user token and a
+ * dashboard-admin token. `aud` only separated them logically; the keys are
+ * now distinct, and this fails closed if the admin key is absent.
+ */
+function getAdminSecret(): Uint8Array {
+  return readSecret("DASHBOARD_JWT_SECRET", "dashboard admin tokens");
 }
 
 /**
@@ -148,11 +166,13 @@ function toAccessTokenPayload(raw: JWTPayload): AccessTokenPayload {
 //
 // Admins authenticate with a distinct JWT that carries an `adm`
 // claim (verifying they are dashboard staff) and no deviceId/sid
-// claims (they are not an end-user device session). The secret and
-// issuer are the same so the sign/verify plumbing is shared, but
-// the token shape is separate from the user access token — and the
-// `aud` claim ("dashboard" vs "app") keeps the two families from being
-// replayed against each other's endpoints.
+// claims (they are not an end-user device session).
+//
+// The token SHAPE is separate from the user access token, the `aud`
+// claim ("dashboard" vs "app") keeps the two families from being
+// replayed against each other's endpoints, AND the signing KEY is
+// separate (DASHBOARD_JWT_SECRET vs JWT_SECRET). All three layers are
+// required: `aud` alone would not survive a compromise of one key.
 // ─────────────────────────────────────────────────────────────
 
 /** Issue a signed JWT for a dashboard admin. */
@@ -160,7 +180,7 @@ export async function issueAdminToken(
   adminId: string,
   expiresIn: string = "8h",
 ): Promise<string> {
-  const secret = getSecret();
+  const secret = getAdminSecret();
 
   const token = await new SignJWT({ adm: "admin" })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
@@ -177,13 +197,14 @@ export async function issueAdminToken(
 /**
  * Verify an admin token. Returns the adminId (sub) on success.
  *
- * The `aud` check rejects an end-user access token being replayed against a
- * dashboard endpoint, which the shared secret alone would not prevent.
+ * Two independent barriers reject an end-user access token presented
+ * against a dashboard endpoint: the `aud` check, and the fact that it was
+ * signed with a different key, so it fails signature verification first.
  */
 export async function verifyAdminToken(
   token: string,
 ): Promise<{ adminId: string }> {
-  const secret = getSecret();
+  const secret = getAdminSecret();
 
   const { payload } = await jwtVerify(token, secret, {
     issuer: ISSUER,
