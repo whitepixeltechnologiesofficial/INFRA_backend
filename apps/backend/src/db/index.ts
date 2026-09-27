@@ -37,3 +37,19 @@ export { schema };
 
 /** Drizzle database type — use for optional db parameters in auth functions. */
 export type AppDb = ReturnType<typeof drizzle<typeof schema>>;
+
+/**
+ * A Drizzle transaction handle opened from an {@link AppDb}.
+ *
+ * `db.transaction(cb)` hands `cb` a tx that supports every query method the
+ * auth helpers use but not `transaction()` itself, so a tx is not assignable to
+ * `AppDb`. Callers inside an existing transaction (OTP verify creating a session,
+ * for example) previously had to write `db: tx as any`, which disables type
+ * checking on a database handle — exactly the place where a typo in a method
+ * name should be caught. This alias lets them pass the tx honestly.
+ */
+export type AppTx = Parameters<Parameters<AppDb["transaction"]>[0]>[0];
+
+/** Either a full database handle or an open transaction over it. */
+export type AppDbLike = AppDb | AppTx;
+

@@ -17,10 +17,10 @@
  *     that aren't currently connected.
  */
 
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, randomUUID, createHash } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { eq, and, isNull } from "drizzle-orm";
-import { getDb, type AppDb } from "../db/index.js";
+import { getDb, type AppDbLike } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
 
 // Exported so `verify-refresh.ts` exercises the real values instead of
@@ -62,10 +62,13 @@ export async function issueRefreshToken({
   userId,
   deviceId,
   db: dbParam,
+  tokenFamilyId,
 }: {
   userId: string;
   deviceId: string;
-  db?: AppDb;
+  db?: AppDbLike;
+  /** Inherit the family when rotating; omit to start a new family (fresh login). */
+  tokenFamilyId?: string;
 }): Promise<IssueRefreshTokenResult> {
   const db = dbParam ?? getDb();
 
@@ -81,6 +84,7 @@ export async function issueRefreshToken({
       tokenLookup,
       refreshTokenHash: tokenHash,
       refreshTokenExpiresAt: expiresAt30Days(),
+      tokenFamilyId: tokenFamilyId ?? randomUUID(),
     })
     .returning({ id: sessions.id });
 
@@ -119,7 +123,7 @@ export type ValidatedSession = {
  */
 export async function validateRefreshToken(
   rawToken: string,
-  dbParam?: AppDb,
+  dbParam?: AppDbLike,
 ): Promise<ValidatedSession | null> {
   const db = dbParam ?? getDb();
   const tokenLookup = lookupKey(rawToken);
@@ -172,7 +176,7 @@ export async function validateRefreshToken(
  */
 export async function revokeSession(
   sessionId: string,
-  dbParam?: AppDb,
+  dbParam?: AppDbLike,
 ): Promise<void> {
   const db = dbParam ?? getDb();
 
@@ -183,12 +187,157 @@ export async function revokeSession(
 }
 
 /**
+ * Revoke every session in a token family.
+ *
+ * Scoped by `token_family_id` when available. Rows predating rotation have a
+ * NULL family, so those fall back to (user_id, device_id) — which is the same
+ * set of tokens a pre-rotation client would have held for that device.
+ */
+async function revokeTokenFamily(
+  row: { tokenFamilyId: string | null; userId: string; deviceId: string },
+  db: AppDbLike,
+): Promise<number> {
+  const scope =
+    row.tokenFamilyId !== null
+      ? eq(sessions.tokenFamilyId, row.tokenFamilyId)
+      : and(eq(sessions.userId, row.userId), eq(sessions.deviceId, row.deviceId));
+
+  const result = await db
+    .update(sessions)
+    .set({ revokedAt: new Date() })
+    .where(and(scope, isNull(sessions.revokedAt)));
+
+  return result.rowCount ?? 0;
+}
+
+export type RotateRefreshTokenResult =
+  | {
+      status: "ok";
+      refreshToken: string;
+      sessionId: string;
+      userId: string;
+      deviceId: string;
+    }
+  | { status: "invalid" }
+  | { status: "reuse_detected"; revokedCount: number };
+
+/**
+ * Rotate a refresh token, detecting reuse of a superseded token.
+ *
+ * This is the correct entry point for `POST /refresh`. `validateRefreshToken`
+ * is read-only and cannot be used here, because rotation needs to WRITE.
+ *
+ * Flow:
+ *   1. Find the row by lookup key, including already-revoked rows — a rotated
+ *      token must be findable precisely so reuse can be detected.
+ *   2. bcrypt-verify. A mismatch is an ordinary invalid token.
+ *   3. If `rotated_at` is set, this token was already superseded. That is the
+ *      signature of reuse: either an attacker replayed a stolen token, or a
+ *      client failed to store the rotated token. Revoke the whole family.
+ *   4. If `revoked_at` is set but `rotated_at` is not, it was an explicit
+ *      logout — reject, but do not treat as reuse.
+ *   5. CLAIM the row with a conditional UPDATE, then issue the replacement.
+ *
+ * Step 5 is deliberately claim-first and the claim is what decides the winner.
+ * The obvious ordering — issue the replacement, then mark the old row rotated —
+ * has a race: two concurrent requests with the same token both read
+ * `rotated_at = NULL` and both issue a valid replacement, so rotation protects
+ * nothing while appearing to. A single conditional UPDATE makes the claim
+ * atomic in the database, so exactly one request can win; the loser observes
+ * `rowCount === 0` and is routed to reuse handling like any other replay.
+ *
+ * Step 3 is the rest of the point: without it a stolen token stays valid for the
+ * full 30 days and the theft is both silent and unrevocable.
+ */
+export async function rotateRefreshToken(
+  rawToken: string,
+  dbParam?: AppDbLike,
+): Promise<RotateRefreshTokenResult> {
+  const db = dbParam ?? getDb();
+  const tokenLookup = lookupKey(rawToken);
+  const now = new Date();
+
+  const [row] = await db
+    .select({
+      sessionId: sessions.id,
+      userId: sessions.userId,
+      deviceId: sessions.deviceId,
+      refreshTokenHash: sessions.refreshTokenHash,
+      revokedAt: sessions.revokedAt,
+      rotatedAt: sessions.rotatedAt,
+      expiresAt: sessions.refreshTokenExpiresAt,
+      tokenFamilyId: sessions.tokenFamilyId,
+    })
+    .from(sessions)
+    .where(eq(sessions.tokenLookup, tokenLookup))
+    .limit(1);
+
+  if (!row) return { status: "invalid" };
+
+  const tokenMatches = await bcrypt.compare(rawToken, row.refreshTokenHash);
+  if (!tokenMatches) return { status: "invalid" };
+
+  // Reuse: this exact token was already rotated. Revoke the entire family.
+  if (row.rotatedAt !== null) {
+    const revokedCount = await revokeTokenFamily(row, db);
+    return { status: "reuse_detected", revokedCount };
+  }
+
+  // Explicit logout, or already revoked by a kill-switch — not reuse.
+  if (row.revokedAt !== null) return { status: "invalid" };
+
+  if (row.expiresAt < now) return { status: "invalid" };
+
+  // Claim the row. The predicates make this the single point where two racing
+  // requests are separated: only one can flip `rotated_at` from NULL.
+  const claim = await db
+    .update(sessions)
+    .set({ rotatedAt: now })
+    .where(
+      and(
+        eq(sessions.id, row.sessionId),
+        isNull(sessions.rotatedAt),
+        isNull(sessions.revokedAt),
+      ),
+    );
+
+  // Lost the race — a concurrent request already rotated this token, which is
+  // indistinguishable from an attacker replaying it. Same response either way.
+  if ((claim.rowCount ?? 0) === 0) {
+    const revokedCount = await revokeTokenFamily(row, db);
+    return { status: "reuse_detected", revokedCount };
+  }
+
+  // We own the claim; issue the successor in the same family.
+  const { refreshToken, sessionId } = await issueRefreshToken({
+    userId: row.userId,
+    deviceId: row.deviceId,
+    db,
+    tokenFamilyId: row.tokenFamilyId ?? undefined,
+  });
+
+  // Record the audit link back from the superseded token to its replacement.
+  await db
+    .update(sessions)
+    .set({ revokedAt: now, replacedBySessionId: sessionId })
+    .where(eq(sessions.id, row.sessionId));
+
+  return {
+    status: "ok",
+    refreshToken,
+    sessionId,
+    userId: row.userId,
+    deviceId: row.deviceId,
+  };
+}
+
+/**
  * Revoke ALL sessions for a user (force-logout everywhere).
  *
  * Used by ONB-1.7 (new-device login handoff) and by the admin
  * kill-switch.
  */
-export async function revokeAllUserSessions(userId: string, db?: AppDb): Promise<number> {
+export async function revokeAllUserSessions(userId: string, db?: AppDbLike): Promise<number> {
   const conn = db ?? getDb();
 
   const result = await conn

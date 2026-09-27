@@ -6,10 +6,15 @@ export type { AccessTokenPayload, IssueAccessTokenParams } from "./types.js";
 export {
   issueRefreshToken,
   validateRefreshToken,
+  rotateRefreshToken,
   revokeSession,
   revokeAllUserSessions,
 } from "./refresh-token.js";
-export type { IssueRefreshTokenResult, ValidatedSession } from "./refresh-token.js";
+export type {
+  IssueRefreshTokenResult,
+  ValidatedSession,
+  RotateRefreshTokenResult,
+} from "./refresh-token.js";
 
 export {
   recordLegalAcceptance,

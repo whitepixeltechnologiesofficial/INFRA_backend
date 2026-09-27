@@ -8,6 +8,10 @@
  *   4. Hash is a valid bcrypt hash ($2b$ prefix, 60 chars)
  *   5. bcrypt.compare matches the correct token
  *   6. bcrypt.compare rejects the wrong token
+ *   7. lookup key is deterministic, unique per token, and 32 hex chars
+ *   8. token length is sufficient
+ *   9. the REAL validateRefreshToken accepts / rejects correctly, including
+ *      the expiry branch that a reimplementation had silently skipped
  *
  * Token length, bcrypt cost, the lookup-key derivation, and the bcrypt
  * implementation are all imported from `refresh-token.ts` rather than
@@ -23,6 +27,7 @@ import {
   REFRESH_TOKEN_BYTES,
   BCRYPT_ROUNDS,
   lookupKey,
+  validateRefreshToken,
 } from "./refresh-token.js";
 
 async function main() {
@@ -114,37 +119,113 @@ async function main() {
     checks.push(`FAIL  token length = ${rawToken.length} chars (too short)`);
   }
 
-  // 11. Simulate the full flow: lookup key → bcrypt verify → revoke check
-  const mockDb = new Map<string, { lookup: string; bcryptHash: string; revokedAt: Date | null }>();
-  mockDb.set("session_1", { lookup: tokenLookup, bcryptHash: tokenHash, revokedAt: null });
+  // 11-15. Exercise the REAL validateRefreshToken.
+  //
+  // The previous version of this script reimplemented the lookup → bcrypt →
+  // revoked_at sequence against an in-memory Map. That asserts the author's
+  // idea of the algorithm rather than the shipped one: validateRefreshToken
+  // could have been broken in any number of ways and this script would still
+  // have passed. It also never covered expiry at all, which is a branch that
+  // decides whether a 30-day-old token is honoured.
+  //
+  // The stub below implements only the query chain validateRefreshToken uses.
+  // It is not a database, so the generated SQL is still unverified — that
+  // remains the job of integration-test.ts against a real database.
+  type SessionRow = {
+    id: string;
+    userId: string;
+    deviceId: string;
+    refreshTokenHash: string;
+    revokedAt: Date | null;
+    expiresAt: Date;
+  };
 
-  // Before revocation: lookup by key finds active session, bcrypt verifies → ACCEPT
-  const found = mockDb.get("session_1");
-  const bcryptOk = found && await bcrypt.compare(rawToken, found.bcryptHash);
-  const beforeRevoke = found && found.lookup === tokenLookup && bcryptOk && found.revokedAt === null;
-  if (beforeRevoke) {
-    checks.push("PASS  full flow: lookup + bcrypt verify + revoked=null → ACCEPT");
-  } else {
-    checks.push("FAIL  full flow: should have been accepted");
+  function stubDb(row: SessionRow | null) {
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            // Project into the shape the real query selects. `id` is aliased to
+            // `sessionId`, so returning the row unprojected would silently omit
+            // it and make a correct implementation look broken.
+            limit: async () =>
+              row
+                ? [
+                    {
+                      sessionId: row.id,
+                      userId: row.userId,
+                      deviceId: row.deviceId,
+                      refreshTokenHash: row.refreshTokenHash,
+                      revokedAt: row.revokedAt,
+                      expiresAt: row.expiresAt,
+                    },
+                  ]
+                : [],
+          }),
+        }),
+      }),
+    } as unknown as Parameters<typeof validateRefreshToken>[1];
   }
 
-  // Revoke the session
-  if (found) found.revokedAt = new Date();
+  const activeRow: SessionRow = {
+    id: "session_1",
+    userId: "user_abc123",
+    deviceId: "device_xyz789",
+    refreshTokenHash: tokenHash,
+    revokedAt: null,
+    expiresAt: new Date(Date.now() + 30 * 24 * 3600_000),
+  };
 
-  // After revocation: same lookup + bcrypt, but revoked_at is non-null → REJECT
-  const afterRevoke = found && found.lookup === tokenLookup && bcryptOk && found.revokedAt !== null;
-  if (afterRevoke) {
-    checks.push("PASS  full flow: lookup + bcrypt verify + revoked!=null → REJECT");
+  // 11. Valid, unexpired, unrevoked → accepted, with the right identity.
+  const accepted = await validateRefreshToken(rawToken, stubDb(activeRow));
+  if (
+    accepted !== null &&
+    accepted.sessionId === "session_1" &&
+    accepted.userId === "user_abc123" &&
+    accepted.deviceId === "device_xyz789"
+  ) {
+    checks.push("PASS  validateRefreshToken accepts a valid session and returns its identity");
   } else {
-    checks.push("FAIL  full flow: should have been rejected");
+    checks.push(`FAIL  validateRefreshToken rejected a valid token: ${JSON.stringify(accepted)}`);
   }
 
-  // 12. Unknown token: no lookup match → REJECT
-  const unknownFound = mockDb.get("session_nonexistent");
-  if (!unknownFound) {
-    checks.push("PASS  unknown token: no lookup match → REJECT");
+  // 12. Revoked session → rejected, even though the token and hash still match.
+  const revoked = await validateRefreshToken(
+    rawToken,
+    stubDb({ ...activeRow, revokedAt: new Date() }),
+  );
+  if (revoked === null) {
+    checks.push("PASS  validateRefreshToken rejects a REVOKED session (kill-switch honoured)");
   } else {
-    checks.push("FAIL  unknown token: somehow found a row");
+    checks.push("FAIL  validateRefreshToken accepted a revoked session");
+  }
+
+  // 13. EXPIRED session → rejected. This branch was previously untested.
+  const expired = await validateRefreshToken(
+    rawToken,
+    stubDb({ ...activeRow, expiresAt: new Date(Date.now() - 1000) }),
+  );
+  if (expired === null) {
+    checks.push("PASS  validateRefreshToken rejects an EXPIRED session (30-day window enforced)");
+  } else {
+    checks.push("FAIL  validateRefreshToken accepted an expired session");
+  }
+
+  // 14. Unknown token (no row) → rejected.
+  const unknown = await validateRefreshToken(rawToken, stubDb(null));
+  if (unknown === null) {
+    checks.push("PASS  validateRefreshToken rejects an unknown token (no lookup match)");
+  } else {
+    checks.push("FAIL  validateRefreshToken accepted an unknown token");
+  }
+
+  // 15. Correct lookup key but the presented token is wrong → rejected.
+  // Guards the specific mistake of trusting the lookup key on its own.
+  const wrongToken = await validateRefreshToken(rawToken2, stubDb(activeRow));
+  if (wrongToken === null) {
+    checks.push("PASS  validateRefreshToken rejects a wrong token even when a row exists");
+  } else {
+    checks.push("FAIL  validateRefreshToken accepted the wrong token");
   }
 
   console.log("\n=== Verification results ===");

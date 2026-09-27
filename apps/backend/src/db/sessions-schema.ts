@@ -54,6 +54,29 @@ export const sessions = pgTable(
      */
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
 
+    /**
+     * Rotation marker. NULL = this token was never rotated.
+     *
+     * Non-null means the token was superseded by a refresh, which is what
+     * distinguishes REUSE (a stolen token replayed after the legitimate client
+     * already rotated it) from an ordinary logout. Without this column the two
+     * are indistinguishable and reuse cannot be detected.
+     */
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+
+    /**
+     * Groups every token descended from a single login, so reuse of any one of
+     * them can revoke the whole chain.
+     *
+     * NULL on rows created before rotation existed. Reuse handling falls back to
+     * (user_id, device_id) scoping for those, which is a safe approximation:
+     * it can revoke a legitimate device session, never less than that.
+     */
+    tokenFamilyId: uuid("token_family_id"),
+
+    /** Audit link: the session that superseded this one. */
+    replacedBySessionId: uuid("replaced_by_session_id"),
+
     /** Row creation time. */
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -64,5 +87,7 @@ export const sessions = pgTable(
     index("sessions_user_id_idx").on(table.userId),
     // Fast lookup by token_lookup (the hot path on every refresh).
     index("sessions_token_lookup_idx").on(table.tokenLookup),
+    // Reuse detection revokes by family.
+    index("sessions_token_family_idx").on(table.tokenFamilyId),
   ],
 );
