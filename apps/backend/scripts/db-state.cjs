@@ -1,8 +1,10 @@
 const { Client } = require("pg");
-const c = new Client({
-  connectionString:
-    "postgresql://postgres:WhitePixcelTechnologies@db.ukmsgzvkvcsbhtlmvswr.supabase.co:6543/postgres",
-});
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  console.error("DATABASE_URL is not set. Refusing to guess a database.");
+  process.exit(1);
+}
+const c = new Client({ connectionString });
 
 (async () => {
   await c.connect();
