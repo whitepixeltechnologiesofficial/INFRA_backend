@@ -26,7 +26,6 @@ import {
   issueAccessToken,
   issueRefreshToken,
   validateRefreshToken,
-  revokeAllUserSessions,
 } from "../auth/index.js";
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
@@ -198,9 +197,9 @@ async function executeHandoffTransaction({
     const { refreshToken, sessionId } = await issueRefreshToken({
       userId,
       deviceId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- transaction type mismatch with issueRefreshToken's db param
       db: tx as any,
     });
-
     const accessToken = await issueAccessToken({
       userId,
       deviceId,
@@ -242,7 +241,7 @@ router.post("/accept-legal", async (req: Request, res: Response) => {
     });
 
     res.json({ success: true });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /accept-legal error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -313,7 +312,7 @@ router.post(
       await deliverOtpCode(phoneNumber, rawCode);
 
       res.json({ success: true });
-    } catch (err) {
+    } catch (_err) {
       console.error("POST /otp/send error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -439,7 +438,7 @@ router.post(
         userId: result.userId,
         sessionId: result.sessionId,
       });
-    } catch (err) {
+    } catch (_err) {
       console.error("POST /otp/verify error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -475,7 +474,7 @@ router.post("/check-existing-user", async (req: Request, res: Response) => {
 
     // Only return boolean — never leak userId here
     res.json({ exists: !!existingUser });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /check-existing-user error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -509,7 +508,7 @@ router.post("/refresh", async (req: Request, res: Response) => {
     });
 
     res.json({ accessToken });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /refresh error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -568,7 +567,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
       message: `You're now logged in here on ${deviceInfo.deviceName}`,
       previousDevicesLoggedOut: handoff.revokedCount,
     });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /login/handoff error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -608,7 +607,7 @@ router.post("/session/check", requireAuth, async (req: Request, res: Response) =
     }
 
     res.json({ isValid: true });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /session/check error");
     res.status(500).json({ error: "Internal server error" });
   }

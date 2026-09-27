@@ -59,7 +59,7 @@ async function resolveSelfPhoneHash(authUserId: string): Promise<string | null> 
 router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
-    const { reportedPhone, reason, messages } = req.body as {
+    const { reportedPhone, messages } = req.body as {
       reportedPhone?: string;
       reason?: string;
       messages?: Array<{ content: string; createdAt?: string }>;
@@ -172,7 +172,7 @@ router.post("/list", async (_req: Request, res: Response) => {
       .orderBy(desc(reports.createdAt));
 
     res.json({ reports: rows });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /reports/list error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -223,7 +223,7 @@ router.post("/get", async (req: Request, res: Response) => {
       actionedAt: report.actionedAt,
       decryptedMessageSnapshot: report.decryptedMessageSnapshot,
     });
-  } catch (err) {
+  } catch (_err) {
     console.error("POST /reports/get error");
     res.status(500).json({ error: "Internal server error" });
   }
