@@ -1,30 +1,42 @@
 /**
  * Debug routes — view all DB table data from the browser.
  *
- * Triple gate:
- *   1. DEBUG=1 env var must be set
- *   2. NODE_ENV must NOT be "production"
- *   3. Only accessible from localhost (IP check)
+ * Triple gate, all of which must pass:
+ *   1. NODE_ENV must positively name a local dev context (allowlist)
+ *   2. DEBUG=1 env var must be set
+ *   3. Request must originate from loopback
+ *
+ * This router is mounted unconditionally (see app.ts), so the gate is the only
+ * thing standing between the internet and a full dump of users, phone numbers,
+ * sessions and legal acceptances. That is why the environment check is an
+ * allowlist: `NODE_ENV !== "production"` would also admit `staging`, `prod`, and
+ * an unset NODE_ENV, which is to say it would admit every environment where this
+ * route should not exist.
  *
  * Remove entirely before production deploy.
  */
 
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { getDb } from "../db/index.js";
 import { issueAdminToken } from "../auth/jwt.js";
+import { unsafeEnvironmentReason } from "../config/safe-env.js";
 
 const router: Router = Router();
 
-function requireDebug(req: Request, res: Response, next: Function) {
+function requireDebug(req: Request, res: Response, next: NextFunction) {
+  const unsafe = unsafeEnvironmentReason();
+  if (unsafe) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   if (process.env.DEBUG !== "1") {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (process.env.NODE_ENV === "production") {
-    res.status(404).json({ error: "Not found" });
-    return;
-  }
-  // Only allow from localhost
+  // Only allow from loopback. `trust proxy` is deliberately NOT enabled on this
+  // app, so req.ip is the real socket address and cannot be forged with
+  // X-Forwarded-For. If trust proxy is ever turned on, this check silently
+  // becomes attacker-controlled and must be revisited.
   const ip = req.ip ?? req.socket.remoteAddress ?? "";
   const isLocal =
     ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
@@ -36,6 +48,31 @@ function requireDebug(req: Request, res: Response, next: Function) {
 }
 
 router.use(requireDebug);
+
+/**
+ * Extra gate for /admin-token specifically.
+ *
+ * The rest of this router only reads data the operator can already see in a
+ * dev database. This one MINTS a working dashboard-admin JWT with no password
+ * check at all — full read/write on every /moderation/* route. A separate
+ * opt-in secret keeps it from being reachable by anyone who merely satisfies the
+ * DEBUG gate on a shared dev box.
+ */
+function requireDebugAdminToken(req: Request, res: Response, next: NextFunction) {
+  const expected = process.env.DEBUG_ADMIN_TOKEN_SECRET;
+  if (!expected) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const presented =
+    (req.headers["x-debug-admin-token"] as string | undefined) ??
+    (req.query.token as string | undefined);
+  if (presented !== expected) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  next();
+}
 
 router.get("/tables", async (_req: Request, res: Response) => {
   try {
@@ -97,11 +134,11 @@ ${data.users.map((u) => `<tr><td>${u.id}</td><td>${u.phone}</td><td>${u.name || 
 ${data.sessions.map((s) => `<tr><td>${s.id}</td><td>${s.userId}</td><td>${s.deviceId}</td><td class="${s.revokedAt === '(active)' ? 'active' : 'revoked'}">${s.revokedAt}</td><td>${s.created}</td></tr>`).join("\n")}</table>
 
 <h2>OTP Verifications (${data.otpVerifications.length})</h2>
-<table><tr><th>Phone</th><th>Code Hash (SHA-256)</th><th>Attempts</th><th>Locked Until</th><th>Expires</th><th>Sent</th></tr>
+<table><tr><th>Phone</th><th>Code Hash (HMAC-SHA256)</th><th>Attempts</th><th>Locked Until</th><th>Expires</th><th>Sent</th></tr>
 ${data.otpVerifications.map((r) => `<tr><td>${r.phone_number}</td><td style="font-size:11px">${r.code_hash}</td><td>${r.attempts}</td><td>${r.locked_until || '<span class="null">null</span>'}</td><td>${r.expires_at}</td><td>${r.sent_at}</td></tr>`).join("\n")}</table>
 
 <h2>SMS Outbox (${data.smsOutbox.length})</h2>
-<table><tr><th>Phone</th><th>OTP Hash (SHA-256)</th><th>Status</th><th>Created</th></tr>
+<table><tr><th>Phone</th><th>OTP Hash (HMAC-SHA256)</th><th>Status</th><th>Created</th></tr>
 ${data.smsOutbox.map((r) => `<tr><td>${r.phone_number}</td><td style="font-size:11px">${r.otp_hash}</td><td>${r.status}</td><td>${r.created_at}</td></tr>`).join("\n")}</table>
 
 <h2>Legal Acceptances (${data.legalAcceptances.length})</h2>
@@ -109,7 +146,7 @@ ${data.smsOutbox.map((r) => `<tr><td>${r.phone_number}</td><td style="font-size:
 ${data.legalAcceptances.map((r) => `<tr><td>${r.phone_number}</td><td>${r.legal_version}</td><td>${r.accepted_at}</td></tr>`).join("\n")}</table>
 
 </body></html>`);
-  } catch (err) {
+  } catch {
     console.error("Debug route error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -117,9 +154,10 @@ ${data.legalAcceptances.map((r) => `<tr><td>${r.phone_number}</td><td>${r.legal_
 
 /**
  * Debug-only: mint a dashboard-admin JWT for local moderation testing.
- * Guarded by the same DEBUG/localhost gate as /tables.
+ * Gated by requireDebug AND requireDebugAdminToken — this bypasses the admin
+ * password entirely, so the DEBUG=1 flag alone must not be enough to reach it.
  */
-router.get("/admin-token", async (_req: Request, res: Response) => {
+router.get("/admin-token", requireDebugAdminToken, async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const admins = await db.execute(
@@ -132,7 +170,7 @@ router.get("/admin-token", async (_req: Request, res: Response) => {
     }
     const token = await issueAdminToken(row.id);
     res.json({ adminId: row.id, token });
-  } catch (err) {
+  } catch {
     console.error("Debug admin-token route error");
     res.status(500).json({ error: "Internal server error" });
   }

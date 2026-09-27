@@ -1,4 +1,5 @@
 import { redactUrl } from "./pool.js";
+import { unsafeEnvironmentReason } from "../config/safe-env.js";
 
 /**
  * Gate for scripts that drop, delete or rewrite live auth state.
@@ -9,10 +10,15 @@ import { redactUrl } from "./pool.js";
  * in explicitly, and remote targets need a second acknowledgement.
  */
 export function assertDestructiveAllowed(action: string, statements: string[]): void {
-  if (process.env.NODE_ENV === "production") {
+  // Allowlist, not `NODE_ENV === "production"`. That denylist let `staging`,
+  // `prod`, and an unset NODE_ENV through, which is every environment where this
+  // script is most dangerous and least expected to be blocked.
+  const unsafe = unsafeEnvironmentReason();
+  if (unsafe) {
     throw new Error(
-      `${action} refused: NODE_ENV is "production". ` +
-        `This script destroys live auth state and must never run against production.`,
+      `${action} refused: ${unsafe}\n` +
+        `This script destroys live auth state and must never run against a shared ` +
+        `or production database.`,
     );
   }
 

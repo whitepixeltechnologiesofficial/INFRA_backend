@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { createPool } from "./pool.js";
 import { assertDestructiveAllowed } from "./guard.js";
+import { isLocalDevEnvironment } from "../config/safe-env.js";
 
 const REMOTE = "postgresql://u:p@db.abcdefg.supabase.com:6543/postgres";
 const LOCAL = "postgresql://u:p@localhost:5432/postgres";
@@ -109,17 +110,52 @@ check("allows remote target with BOTH opt-ins", () => assertDestructiveAllowed(S
 
 process.env.NODE_ENV = "production";
 throws("production is refused even with both opt-ins",
-  () => assertDestructiveAllowed(SCRIPT, STMTS), /must never run against production/);
+  () => assertDestructiveAllowed(SCRIPT, STMTS), /not a recognised local development context/);
 
+// The three cases below used to be asserted as ALLOWED, documenting an
+// exact-match gap: the guard compared `NODE_ENV === "production"`, so anything
+// that was not that one spelling — including no value at all — passed through.
+// They are now refusals.
 process.env.NODE_ENV = "staging";
-check("NODE_ENV=staging is NOT blocked as production (exact-match gap confirmed)", () => {
-  assertDestructiveAllowed(SCRIPT, STMTS);
-});
+throws("NODE_ENV=staging is REFUSED (was an exact-match gap)",
+  () => assertDestructiveAllowed(SCRIPT, STMTS), /not a recognised local development context/);
 
 process.env.NODE_ENV = "prod";
-check("NODE_ENV=prod is NOT blocked as production (documents the exact-match gap)", () => {
-  assertDestructiveAllowed(SCRIPT, STMTS);
-});
+throws("NODE_ENV=prod is REFUSED (was an exact-match gap)",
+  () => assertDestructiveAllowed(SCRIPT, STMTS), /not a recognised local development context/);
+
+process.env.NODE_ENV = "Production";
+throws("NODE_ENV=Production is REFUSED (case must not matter)",
+  () => assertDestructiveAllowed(SCRIPT, STMTS), /not a recognised local development context/);
+
+delete process.env.NODE_ENV;
+throws("unset NODE_ENV is REFUSED (fails closed, not open)",
+  () => assertDestructiveAllowed(SCRIPT, STMTS), /is not set/);
+
+console.log("\nisLocalDevEnvironment allowlist");
+
+check("development is a safe local context", () =>
+  assert.equal(isLocalDevEnvironment("development"), true));
+check("test is a safe local context", () =>
+  assert.equal(isLocalDevEnvironment("test"), true));
+check("surrounding whitespace is trimmed", () =>
+  assert.equal(isLocalDevEnvironment("  development  "), true));
+check("case is normalised", () =>
+  assert.equal(isLocalDevEnvironment("Development"), true));
+
+const UNSAFE_ENVS: Array<string | undefined> = [
+  "production",
+  "prod",
+  "staging",
+  "preview",
+  "dev",
+  "",
+  undefined,
+];
+for (const unsafeEnv of UNSAFE_ENVS) {
+  check(`${JSON.stringify(unsafeEnv)} is NOT a safe local context`, () =>
+    assert.equal(isLocalDevEnvironment(unsafeEnv), false));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
