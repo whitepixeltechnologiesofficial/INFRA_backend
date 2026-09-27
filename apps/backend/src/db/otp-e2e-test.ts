@@ -28,6 +28,7 @@ function assert(label: string, condition: boolean, detail?: string) {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper posts varied request bodies
 async function post(path: string, body: any) {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
