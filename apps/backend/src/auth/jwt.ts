@@ -20,11 +20,20 @@ const ACCESS_TOKEN_EXPIRY = "1h";
 
 const ISSUER = "wpt-backend";
 
+/** HS256 needs at least 256 bits of key material (RFC 7518 §3.2). */
+const MIN_SECRET_BYTES = 32;
+
 function getSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
     throw new Error(
       "JWT_SECRET is not set. Generate one with: openssl rand -base64 32",
+    );
+  }
+  if (new TextEncoder().encode(secret).byteLength < MIN_SECRET_BYTES) {
+    throw new Error(
+      `JWT_SECRET is too short — it must be at least ${MIN_SECRET_BYTES} bytes ` +
+        `for HS256. Generate one with: openssl rand -base64 32`,
     );
   }
   return new TextEncoder().encode(secret);

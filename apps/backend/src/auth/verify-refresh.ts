@@ -9,23 +9,27 @@
  *   5. bcrypt.compare matches the correct token
  *   6. bcrypt.compare rejects the wrong token
  *
+ * Token length, bcrypt cost, the lookup-key derivation, and the bcrypt
+ * implementation are all imported from `refresh-token.ts` rather than
+ * re-declared here, so this script cannot drift away from what
+ * production actually does.
+ *
  * Run:  pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts
  */
 
-import { randomBytes, createHash } from "node:crypto";
-import bcrypt from "bcrypt";
-
-const BCRYPT_ROUNDS = 12;
-
-function lookupKey(raw: string): string {
-  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
-}
+import { randomBytes } from "node:crypto";
+import bcrypt from "bcryptjs";
+import {
+  REFRESH_TOKEN_BYTES,
+  BCRYPT_ROUNDS,
+  lookupKey,
+} from "./refresh-token.js";
 
 async function main() {
   const checks: string[] = [];
 
   // Generate a refresh token the same way issueRefreshToken does
-  const rawToken = randomBytes(48).toString("base64url");
+  const rawToken = randomBytes(REFRESH_TOKEN_BYTES).toString("base64url");
   const tokenLookup = lookupKey(rawToken);
   const tokenHash = await bcrypt.hash(rawToken, BCRYPT_ROUNDS);
 
@@ -49,7 +53,7 @@ async function main() {
   }
 
   // 3. Different tokens produce different hashes
-  const rawToken2 = randomBytes(48).toString("base64url");
+  const rawToken2 = randomBytes(REFRESH_TOKEN_BYTES).toString("base64url");
   const hash3 = await bcrypt.hash(rawToken2, BCRYPT_ROUNDS);
   if (tokenHash !== hash3) {
     checks.push("PASS  different tokens → different hashes");

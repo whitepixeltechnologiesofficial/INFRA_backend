@@ -8,7 +8,9 @@
 **Reviewer:** _(to be signed)_
 **Date:** 27 Sep 2026
 
-> This card carries a **mandatory second sign-off**. See §7.
+> This card carries a **mandatory second sign-off**. See §8.
+>
+> Remediations for F3, F5, F6, F7, and F8 are applied in this branch — see §6.
 
 ---
 
@@ -43,9 +45,9 @@ Production consumers were also traced: `middleware/auth.ts`, `app.ts`, `routes/o
 | 2 | 30-second input lockout after 3 failures | PRD §5.2, Sc. 1.8 | `onboarding.ts:51` | **PASS** |
 | 3 | 30-second resend cooldown | PRD §5.2, Sc. 1.9 | `onboarding.ts:52,279` | **PASS** |
 | 4 | Access token lifetime 1 hour | TAD §7.1, §22 item 20 | `jwt.ts:19` | **PASS** |
-| 5 | Refresh token lifetime 30 days | TAD §7.1, §22 item 20 | `refresh-token.ts:27` | **PASS** |
-| 6 | Refresh token stored hashed | TAD §7.1 | `refresh-token.ts:134` (bcrypt, cost 12) | **PASS** |
-| 7 | Legal acceptance gate server-side | TAD §7.2 | `legal-gate.ts:75` | **PASS** |
+| 5 | Refresh token lifetime 30 days | TAD §7.1, §22 item 20 | `refresh-token.ts:31` | **PASS** |
+| 6 | Refresh token stored hashed | TAD §7.1 | `refresh-token.ts:137` (bcrypt, cost 12) | **PASS** |
+| 7 | Legal acceptance gate server-side | TAD §7.2 | `legal-gate.ts:93` | **PASS** |
 | 8 | Logout ends only the current session | PRD §5.14 | refresh only | **PARTIAL** → F1 |
 | 9 | `aud` claim separation, `dashboard` vs `app` | TAD §7.4, §15.3 | **nowhere** | **FAIL** → F2 |
 | 10 | `sessions.revoked_at` check at connection time | TAD §9.5 | **nowhere** | **FAIL** → F1 |
@@ -54,9 +56,13 @@ Production consumers were also traced: `middleware/auth.ts`, `app.ts`, `routes/o
 
 Note: the card names "retry limits, cooldowns, token expiry" as the areas to check. All three are compliant (rows 1–5). The failures found are in areas the card did not name.
 
+This table records the state at the **base commit `f27b0ae`**. The two failures are unchanged by this branch — F1 and F2 were deliberately not fixed (§6). The separate MEDIUM and LOW findings F3 and F5–F8 fall outside these ten TAD-mandated rows and *were* fixed here, so no row above changes.
+
 ---
 
 ## 3. Findings
+
+> **How to read the line numbers in this section.** F1 and F2 cite code that is unchanged in this branch, so their references are live. F3 and F5–F8 describe defects that have since been **fixed here** (§6), so their line numbers refer to the code **at base commit `f27b0ae`**, before the fix. To re-check one, use `git show f27b0ae:apps/backend/src/auth/<file>`. The §2 table has been updated to current line numbers.
 
 ### F1 — HIGH — No `revoked_at` check at WebSocket connection
 
@@ -251,17 +257,50 @@ Per the sprint brief, a technical question the TAD does not answer is an Open It
 
 ---
 
-## 6. Limits of this review
+## 6. Remediations applied in this branch
 
-- **Static review only.** No runtime or penetration testing was performed. The test scripts in `auth/` were read, not executed — all five require a live `DATABASE_URL`, and the workspace has no reachable database (PostgreSQL TCP ports are blocked on this network).
-- **Scope was `auth/`.** Consumers were traced far enough to confirm F1 and F2, but `routes/admin.ts`, `routes/moderation.ts`, and `routes/debug.ts` were not themselves reviewed line-by-line.
-- **`verify.ts` and `verify-refresh.ts` are not tests.** They have no test framework and are not in any suite. Their assertions were read but not executed.
-- **Rate limiting was not assessed here.** It lives in `routes/onboarding.ts`, outside this folder, and is covered by rows 1–3 of §2 as a compliance check only.
-- **F3 and F4 touch the database schema.** Remediation is a migration and should be coordinated with BE-R2.1's schema work so the schema changes stay in one coordinated pass, as the sprint plan requires.
+The card's VERIFY step asks this note to state *"what, if anything, was fixed."* Five findings were fixed in `81903f6`→HEAD. F1, F2, and F4 were **not** fixed — the reasoning is in the table.
+
+### Fixed
+
+| # | Severity | Fix | Files |
+|---|---|---|---|
+| **F3** | MEDIUM | Added an `isNull(revokedAt)` guard to `revokeSession`, matching `revokeAllUserSessions`. A repeated call no longer overwrites the original revocation timestamp. | `auth/refresh-token.ts` |
+| **F5** | MEDIUM | `hasAcceptedLegal` and `requireLegalAcceptance` now take a `legalVersion` (defaulting to the new `CURRENT_LEGAL_VERSION`) and compare it to the stored value. A user on a superseded version is treated as not having accepted and is re-prompted. `onboarding.ts` no longer hardcodes the version string. | `auth/legal-gate.ts`, `auth/index.ts`, `routes/onboarding.ts` |
+| **F6** | LOW | `getSecret` now rejects a `JWT_SECRET` shorter than 32 bytes, the HS256 minimum per RFC 7518 §3.2. Previously any non-empty string was accepted. | `auth/jwt.ts` |
+| **F7** | LOW | `verify-refresh.ts` now imports `REFRESH_TOKEN_BYTES`, `BCRYPT_ROUNDS`, and `lookupKey` from `refresh-token.ts`, and uses `bcryptjs` rather than a second bcrypt package. The script can no longer drift from what production does. | `auth/refresh-token.ts`, `auth/verify-refresh.ts` |
+| **F8** | LOW | `LegalAcceptanceRequiredError` no longer embeds the phone number in the message. The number is still reachable server-side via a non-enumerable property, so logging is unaffected. | `auth/legal-gate.ts` |
+
+**F5 test coverage added.** `legal-gate-test.ts` step 6 previously asserted the *buggy* behaviour — that a user who re-accepted at `v2.0` still passed the default gate. It now asserts that the stale version is rejected by both `hasAcceptedLegal` and `requireLegalAcceptance`, and a new step 7 confirms that re-accepting the current version restores access.
+
+### Deliberately not fixed
+
+| # | Severity | Why not | Route |
+|---|---|---|---|
+| **F1** | HIGH | Requires a design decision on the WebSocket auth path, and `ws/` is also R2.6 territory. Fixing it here risks conflicting with that work. | Refer to Samson with the suggested design in F1. |
+| **F2** | HIGH | The fix is small, but adding an `aud` claim changes token semantics and **invalidates every token already issued**. Needs explicit approval. | Approver checkbox in §8. |
+| **F4** | MEDIUM | `token_lookup` needs `NOT NULL` plus a `UNIQUE` index, which is a migration. | Coordinate with BE-R2.1 so the schema lands in one pass. |
+
+### Verification performed after the fixes
+
+- `pnpm typecheck` — 4/4 packages pass.
+- `pnpm --filter @wpt/backend exec tsx src/auth/verify-refresh.ts` — 13/13 checks pass, now running against the production constants (F7).
+- `eslint` on all six changed `auth/` files — clean. `routes/onboarding.ts` reports 9 errors, all confirmed **pre-existing on `main`** and none introduced here; that file is not in this card's scope.
+- `legal-gate-test.ts` was **not executed** — it needs a live `DATABASE_URL`, and PostgreSQL TCP ports are blocked on this network. Its new assertions are unverified at runtime and should be run before merge.
 
 ---
 
-## 7. Sign-off
+## 7. Limits of this review
+
+- **Static review only.** No runtime or penetration testing was performed. The test scripts in `auth/` were read, not executed — all five require a live `DATABASE_URL`, and the workspace has no reachable database (PostgreSQL TCP ports are blocked on this network).
+- **Scope was `auth/`.** Consumers were traced far enough to confirm F1 and F2, but `routes/admin.ts`, `routes/moderation.ts`, and `routes/debug.ts` were not themselves reviewed line-by-line.
+- **`verify.ts` and `verify-refresh.ts` are not tests.** They have no test framework and are not in any suite. `verify-refresh.ts` was executed after the F7 fix and passes 13/13 (see §6); `verify.ts` was read only.
+- **Rate limiting was not assessed here.** It lives in `routes/onboarding.ts`, outside this folder, and is covered by rows 1–3 of §2 as a compliance check only.
+- **F4 still needs a migration.** It is the only remaining finding that changes the schema — `token_lookup` requires `NOT NULL` plus a `UNIQUE` index. It should be coordinated with BE-R2.1's schema work so the changes land in one coordinated pass, as the sprint plan requires. (F3 needed no migration and is fixed in this branch; see §6.)
+
+---
+
+## 8. Sign-off
 
 This card carries a mandatory second sign-off. Both reviewers should confirm they have read §2 (compliance), §3 (findings), and §5 (open items) in full.
 

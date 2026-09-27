@@ -23,11 +23,14 @@ import { eq, and, isNull } from "drizzle-orm";
 import { getDb, type AppDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
 
-const REFRESH_TOKEN_BYTES = 48; // 384 bits — plenty of entropy
+// Exported so `verify-refresh.ts` exercises the real values instead of
+// re-declaring its own — duplicating these silently drifts and makes the
+// verification script assert against a different scheme than production.
+export const REFRESH_TOKEN_BYTES = 48; // 384 bits — plenty of entropy
+export const BCRYPT_ROUNDS = 12;
 const REFRESH_TOKEN_TTL_DAYS = 30;
-const BCRYPT_ROUNDS = 12;
 
-function lookupKey(raw: string): string {
+export function lookupKey(raw: string): string {
   // First 32 hex chars of SHA-256 — deterministic, used for DB index lookup.
   return createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
@@ -152,6 +155,10 @@ export async function validateRefreshToken(
  *
  * After this call, any refresh attempt with the corresponding token
  * will be rejected by `validateRefreshToken`.
+ *
+ * Only revokes a session that is still active — the `isNull` guard
+ * matches `revokeAllUserSessions` and preserves the original
+ * `revoked_at` timestamp if this is called more than once.
  */
 export async function revokeSession(sessionId: string): Promise<void> {
   const db = getDb();
@@ -159,7 +166,7 @@ export async function revokeSession(sessionId: string): Promise<void> {
   await db
     .update(sessions)
     .set({ revokedAt: new Date() })
-    .where(eq(sessions.id, sessionId));
+    .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
 }
 
 /**

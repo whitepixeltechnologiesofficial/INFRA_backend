@@ -6,7 +6,8 @@
  *   2. Record legal acceptance for phone number
  *   3. Attempt OTP verify again → ACCEPTED (gate passes)
  *   4. Different phone number without acceptance → REJECTED
- *   5. Re-acceptance with new version → idempotent update
+ *   5. Re-acceptance with a new version → stale version is REJECTED
+ *   6. Re-accepting the current version → accepted again
  *
  * Run:  $env:DATABASE_URL="..."; pnpm --filter @wpt/backend exec tsx src/auth/legal-gate-test.ts
  */
@@ -16,6 +17,7 @@ import {
   hasAcceptedLegal,
   requireLegalAcceptance,
   LegalAcceptanceRequiredError,
+  CURRENT_LEGAL_VERSION,
 } from "./index.js";
 
 const checks: string[] = [];
@@ -90,8 +92,34 @@ async function main() {
   console.log("\nStep 6: Re-acceptance with new legal version (idempotent)...");
   const newVersion = "v2.0-2025-01-01";
   await recordLegalAcceptance({ phoneNumber: phoneA, legalVersion: newVersion });
-  const afterReAccept = await hasAcceptedLegal(phoneA);
-  assert(afterReAccept === true, "still accepted after version update");
+
+  // The row now records newVersion, so a check against newVersion passes...
+  const acceptedAtNew = await hasAcceptedLegal(phoneA, newVersion);
+  assert(
+    acceptedAtNew === true,
+    "accepted when checked against the version actually on record",
+  );
+
+  // ...but the default gate still requires CURRENT_LEGAL_VERSION, so a
+  // user on a stale version is re-prompted. This is the behaviour that
+  // was previously missing: the version column was written but never read.
+  const staleIsRejected = await hasAcceptedLegal(phoneA);
+  assert(
+    staleIsRejected === false,
+    `stale version rejected (row is "${newVersion}", current is "${CURRENT_LEGAL_VERSION}")`,
+  );
+
+  // And the gate itself must block OTP verification for a stale version.
+  let gateBlockedStale = false;
+  try {
+    await requireLegalAcceptance(phoneA);
+  } catch (err) {
+    gateBlockedStale = err instanceof LegalAcceptanceRequiredError;
+  }
+  assert(
+    gateBlockedStale,
+    "requireLegalAcceptance blocks OTP verification on a stale version",
+  );
 
   // Verify the version was updated (query directly)
   const { getDb } = await import("../db/index.js");
@@ -105,6 +133,25 @@ async function main() {
     .limit(1);
 
   assert(row?.legalVersion === newVersion, `legal version updated to "${newVersion}"`);
+
+  // --- Step 7: Re-accepting the current version restores access ---
+  console.log("\nStep 7: Re-accepting the current version restores access...");
+  await recordLegalAcceptance({
+    phoneNumber: phoneA,
+    legalVersion: CURRENT_LEGAL_VERSION,
+  });
+  const restored = await hasAcceptedLegal(phoneA);
+  assert(
+    restored === true,
+    "accepted again once the current version is on record",
+  );
+  let gatePassesAgain = true;
+  try {
+    await requireLegalAcceptance(phoneA);
+  } catch {
+    gatePassesAgain = false;
+  }
+  assert(gatePassesAgain, "gate passes again after re-accepting current version");
 
   // --- Results ---
   console.log("\n=== Results ===");

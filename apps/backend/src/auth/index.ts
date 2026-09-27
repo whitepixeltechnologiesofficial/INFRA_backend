@@ -15,4 +15,5 @@ export {
   hasAcceptedLegal,
   requireLegalAcceptance,
   LegalAcceptanceRequiredError,
+  CURRENT_LEGAL_VERSION,
 } from "./legal-gate.js";

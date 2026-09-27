@@ -27,6 +27,7 @@ import {
   issueRefreshToken,
   validateRefreshToken,
   revokeAllUserSessions,
+  CURRENT_LEGAL_VERSION,
 } from "../auth/index.js";
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
@@ -238,7 +239,7 @@ router.post("/accept-legal", async (req: Request, res: Response) => {
 
     await recordLegalAcceptance({
       phoneNumber,
-      legalVersion: "v1.0-2024-01-15",
+      legalVersion: CURRENT_LEGAL_VERSION,
     });
 
     res.json({ success: true });
