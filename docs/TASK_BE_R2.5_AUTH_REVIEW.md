@@ -274,7 +274,7 @@ Per the sprint brief, a technical question the TAD does not answer is an Open It
 
 ## 6. Remediations applied in this branch
 
-The card's VERIFY step asks this note to state *"what, if anything, was fixed."* Five findings were fixed in `81903f6`→HEAD. F1, F2, and F4 were **not** fixed — the reasoning is in the table.
+The card's VERIFY step asks this note to state *"what, if anything, was fixed."* Six findings were fixed in `81903f6`→HEAD. F1 and F4 were **not** fixed — the reasoning is in the table.
 
 ### Fixed
 
