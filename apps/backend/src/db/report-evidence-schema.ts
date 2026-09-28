@@ -45,6 +45,8 @@ export const reportEvidence = pgTable(
       .defaultNow(),
     decryptedMessageSnapshot: jsonb("decrypted_message_snapshot"),
     metadataSnapshot: jsonb("metadata_snapshot"),
+    mediaBucket: text("media_bucket"),
+    mediaPath: text("media_path"),
     purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [

@@ -1,0 +1,38 @@
+name: Purge Evidence Media
+
+# Runs after the 03:00 UTC run_data_cleanup() cron. Deletes Storage files for
+# expired report evidence, then their database rows (BE-R2.4).
+# Needs repo secrets: DATABASE_URL (Session pooler string), SUPABASE_URL,
+# SUPABASE_SERVICE_ROLE_KEY.
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  purge:
+    name: Purge expired evidence media
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Purge expired evidence media
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: pnpm --filter @wpt/backend exec tsx src/jobs/purge-evidence-media.ts
