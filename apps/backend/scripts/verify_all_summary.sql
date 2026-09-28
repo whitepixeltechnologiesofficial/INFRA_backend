@@ -1,6 +1,8 @@
 -- ============================================================================
 -- verify_all_summary.sql
--- All 36 static checks in ONE result set (SELECT ... UNION ALL ...).
+-- All 35 static checks in ONE result set (SELECT ... UNION ALL ...).
+-- (Count corrected: the header previously said 36 while 34 rows existed; R3.8
+--  added by BE-R2.3 makes the true total 35.)
 -- Why: the Supabase SQL Editor shows only the LAST result set; a single grid
 -- guarantees every check is visible. Functional tests stay as DO blocks with
 -- NOTICEs (rolled back) at the end.
@@ -11,12 +13,12 @@ SELECT
   check_id, label, status,
   detail
 FROM (
-  SELECT 'R1.1' AS check_id, 'message_relay.message_type is an enum' AS label,
+  SELECT 'R1.1' AS check_id, 'pending_messages.message_type is an enum' AS label,
     CASE WHEN (SELECT udt_name FROM information_schema.columns
-               WHERE table_schema='public' AND table_name='message_relay' AND column_name='message_type')
+               WHERE table_schema='public' AND table_name='pending_messages' AND column_name='message_type')
               = 'message_type_enum' THEN 'PASS' ELSE 'FAIL' END AS status,
     COALESCE((SELECT udt_name FROM information_schema.columns
-              WHERE table_schema='public' AND table_name='message_relay' AND column_name='message_type'),'MISSING') AS detail
+              WHERE table_schema='public' AND table_name='pending_messages' AND column_name='message_type'),'MISSING') AS detail
   UNION ALL SELECT 'R1.2',
     'message_type_enum has 6 values (text,image,video,audio,file,system)',
     CASE WHEN (SELECT count(*) FROM pg_type t JOIN pg_enum e ON e.enumtypid=t.oid WHERE t.typname='message_type_enum') = 6
@@ -24,32 +26,32 @@ FROM (
               = 'text,image,video,audio,file,system' THEN 'PASS' ELSE 'FAIL' END,
     (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder) FROM pg_type t JOIN pg_enum e ON e.enumtypid=t.oid WHERE t.typname='message_type_enum')
   UNION ALL SELECT 'R1.3',
-    'message_relay_message_type_check CHECK constraint',
-    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.message_relay'::regclass
-               AND conname='message_relay_message_type_check') = 1 THEN 'PASS' ELSE 'FAIL' END,
+    'pending_messages_message_type_check CHECK constraint',
+    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.pending_messages'::regclass
+               AND conname='pending_messages_message_type_check') = 1 THEN 'PASS' ELSE 'FAIL' END,
     (SELECT COALESCE(string_agg(conname, ', ' ORDER BY conname),'none') FROM pg_constraint
-     WHERE conrelid='public.message_relay'::regclass
-       AND conname IN ('message_relay_message_type_check','message_relay_recipient_exactly_one','message_relay_size_bytes_non_negative'))
+     WHERE conrelid='public.pending_messages'::regclass
+       AND conname IN ('pending_messages_message_type_check','pending_messages_recipient_exactly_one','pending_messages_size_bytes_non_negative'))
   UNION ALL SELECT 'R1.4',
     'reply_to_id + voice_segment_group_id present',
-    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay'
+    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages'
                AND column_name IN ('reply_to_id','voice_segment_group_id')) = 2 THEN 'PASS' ELSE 'FAIL' END,
     (SELECT COALESCE(string_agg(column_name, ', ' ORDER BY column_name),'none') FROM information_schema.columns
-     WHERE table_schema='public' AND table_name='message_relay' AND column_name IN ('reply_to_id','voice_segment_group_id'))
+     WHERE table_schema='public' AND table_name='pending_messages' AND column_name IN ('reply_to_id','voice_segment_group_id'))
   UNION ALL SELECT 'R1.6',
     'recipient_exactly_one CHECK (user XOR group)',
-    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.message_relay'::regclass
-               AND conname='message_relay_recipient_exactly_one') = 1 THEN 'PASS' ELSE 'FAIL' END, 'constraint present'
+    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.pending_messages'::regclass
+               AND conname='pending_messages_recipient_exactly_one') = 1 THEN 'PASS' ELSE 'FAIL' END, 'constraint present'
   UNION ALL SELECT 'R1.7',
     'ciphertext is bytea',
-    CASE WHEN (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay'
+    CASE WHEN (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages'
                AND column_name='ciphertext') = 'bytea' THEN 'PASS' ELSE 'FAIL' END,
-    (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay' AND column_name='ciphertext')
+    (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages' AND column_name='ciphertext')
   UNION ALL SELECT 'R1.8',
     'expires_at defaults to now()+30 days',
-    CASE WHEN (SELECT column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay'
+    CASE WHEN (SELECT column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages'
                AND column_name='expires_at') LIKE '%30%day%' THEN 'PASS' ELSE 'FAIL' END,
-    COALESCE((SELECT column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay'
+    COALESCE((SELECT column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages'
                AND column_name='expires_at'),'no default')
   -- --------------------------------------------------------------------- R2 -
   UNION ALL SELECT 'R2.1',
@@ -110,6 +112,20 @@ FROM (
                AND table_name IN ('test_reports','test_report_evidence')) = 2 THEN 'PASS' ELSE 'FAIL' END,
     (SELECT COALESCE(string_agg(table_name, ', ' ORDER BY table_name),'none') FROM information_schema.tables
      WHERE table_schema='public' AND table_name IN ('test_reports','test_report_evidence'))
+  UNION ALL SELECT 'R3.8',
+    'report_evidence.metadata_snapshot jsonb, nullable (TAD S6.6) + test mirror',
+    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
+               AND table_name='report_evidence' AND column_name='metadata_snapshot'
+               AND data_type='jsonb' AND is_nullable='YES') = 1
+              AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
+               AND table_name='test_report_evidence' AND column_name='metadata_snapshot'
+               AND data_type='jsonb') = 1
+         THEN 'PASS' ELSE 'FAIL' END,
+    (SELECT COALESCE(string_agg(table_name||'.'||column_name||':'||data_type
+                      ||CASE WHEN is_nullable='YES' THEN ' (nullable)' ELSE ' NOT NULL' END,
+                      ', ' ORDER BY table_name),'none') FROM information_schema.columns
+     WHERE table_schema='public' AND column_name='metadata_snapshot'
+       AND table_name IN ('report_evidence','test_report_evidence'))
   -- --------------------------------------------------------------------- R4 -
   UNION ALL SELECT 'R4.1',
     'audit_log: dashboard_admin_id/report_id/action/acted_at',
@@ -132,11 +148,11 @@ FROM (
     (SELECT COALESCE(string_agg(conname, ', ' ORDER BY conname),'none') FROM pg_constraint
      WHERE conrelid='public.devices'::regclass AND contype='f')
   UNION ALL SELECT 'R5.2',
-    'F-05 message_relay.sender_device_id FK -> devices',
-    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.message_relay'::regclass AND contype='f'
+    'F-05 pending_messages.sender_device_id FK -> devices',
+    CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.pending_messages'::regclass AND contype='f'
                AND conname LIKE '%sender_device_id%') >= 1 THEN 'PASS' ELSE 'FAIL' END,
     (SELECT COALESCE(string_agg(conname, ', ' ORDER BY conname),'none') FROM pg_constraint
-     WHERE conrelid='public.message_relay'::regclass AND contype='f')
+     WHERE conrelid='public.pending_messages'::regclass AND contype='f')
   UNION ALL SELECT 'R5.3',
     'F-06 sms_outbox status CHECK (pending/sent/failed)',
     CASE WHEN (SELECT count(*) FROM pg_constraint WHERE conrelid='public.sms_outbox'::regclass
@@ -196,10 +212,10 @@ FROM (
     (SELECT COALESCE(string_agg(table_name, ', ' ORDER BY table_name),'none') FROM information_schema.columns
      WHERE table_schema='public' AND column_name='purged_at' AND table_name IN ('report_evidence','test_report_evidence'))
   UNION ALL SELECT 'R7.3',
-    'message_relay.media_path present (storage cleanup hook)',
-    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay'
+    'pending_messages.media_path present (storage cleanup hook)',
+    CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages'
                AND column_name='media_path') = 1 THEN 'PASS' ELSE 'FAIL' END,
-    (SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='message_relay' AND column_name='media_path')
+    (SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='pending_messages' AND column_name='media_path')
   UNION ALL SELECT 'R7.4',
     'phone_reuse_cooldowns (phone_hash PK + cooldown_until)',
     CASE WHEN (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='phone_reuse_cooldowns'
@@ -207,14 +223,14 @@ FROM (
     (SELECT string_agg(column_name || ':' || udt_name, ', ' ORDER BY ordinal_position)
      FROM information_schema.columns WHERE table_schema='public' AND table_name='phone_reuse_cooldowns')
   UNION ALL SELECT 'R7.5',
-    'storage-purge trigger on message_relay',
-    CASE WHEN (SELECT count(*) FROM pg_trigger WHERE tgrelid='public.message_relay'::regclass AND NOT tgisinternal AND tgname LIKE '%purge%') >= 1
+    'storage-purge trigger on pending_messages',
+    CASE WHEN (SELECT count(*) FROM pg_trigger WHERE tgrelid='public.pending_messages'::regclass AND NOT tgisinternal AND tgname LIKE '%purge%') >= 1
          THEN 'PASS' ELSE 'FAIL' END,
-    (SELECT COALESCE(string_agg(tgname, ', ' ORDER BY tgname),'none') FROM pg_trigger WHERE tgrelid='public.message_relay'::regclass AND NOT tgisinternal)
+    (SELECT COALESCE(string_agg(tgname, ', ' ORDER BY tgname),'none') FROM pg_trigger WHERE tgrelid='public.pending_messages'::regclass AND NOT tgisinternal)
   UNION ALL SELECT 'R7.6',
-    'cron daily-data-cleanup -> run_data_cleanup() | cleanup-message-relay every 5 min',
+    'cron daily-data-cleanup -> run_data_cleanup() | cleanup-pending-messages every 5 min',
     CASE WHEN EXISTS (SELECT 1 FROM cron.job WHERE jobname='daily-data-cleanup' AND command ~ 'run_data_cleanup\(\)')
-          AND EXISTS (SELECT 1 FROM cron.job WHERE jobname='cleanup-message-relay' AND schedule LIKE '%5%')
+          AND EXISTS (SELECT 1 FROM cron.job WHERE jobname='cleanup-pending-messages' AND schedule LIKE '%5%')
          THEN 'PASS' ELSE 'FAIL' END,
     (SELECT string_agg(jobname || ' [' || schedule || ']', ' | ' ORDER BY jobname) FROM cron.job)
   UNION ALL SELECT 'R7.7',
@@ -238,7 +254,7 @@ BEGIN;
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO public.message_relay (sender_device_id, recipient_device_id, ciphertext, message_type)
+    INSERT INTO public.pending_messages (sender_device_id, recipient_device_id, ciphertext, message_type)
     VALUES (gen_random_uuid(), gen_random_uuid(), decode('cafebabe','hex'), 'INVALID_TYPE');
     RAISE NOTICE 'FUNC.F1 FAIL: invalid message_type was ACCEPTED';
   EXCEPTION WHEN others THEN

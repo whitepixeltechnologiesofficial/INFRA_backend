@@ -24,11 +24,14 @@ import { unsafeEnvironmentReason } from "../config/safe-env.js";
 const router: Router = Router();
 
 function requireDebug(req: Request, res: Response, next: NextFunction) {
+
   const unsafe = unsafeEnvironmentReason();
   if (unsafe) {
     res.status(404).json({ error: "Not found" });
     return;
   }
+
+
   if (process.env.DEBUG !== "1") {
     res.status(404).json({ error: "Not found" });
     return;
@@ -146,7 +149,10 @@ ${data.smsOutbox.map((r) => `<tr><td>${r.phone_number}</td><td style="font-size:
 ${data.legalAcceptances.map((r) => `<tr><td>${r.phone_number}</td><td>${r.legal_version}</td><td>${r.accepted_at}</td></tr>`).join("\n")}</table>
 
 </body></html>`);
+
   } catch {
+
+
     console.error("Debug route error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -170,6 +176,7 @@ router.get("/admin-token", requireDebugAdminToken, async (_req: Request, res: Re
     }
     const token = await issueAdminToken(row.id);
     res.json({ adminId: row.id, token });
+
   } catch {
     console.error("Debug admin-token route error");
     res.status(500).json({ error: "Internal server error" });

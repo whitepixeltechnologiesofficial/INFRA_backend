@@ -26,8 +26,10 @@ import {
   issueAccessToken,
   issueRefreshToken,
   validateRefreshToken,
+
   rotateRefreshToken,
   CURRENT_LEGAL_VERSION,
+
 } from "../auth/index.js";
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
@@ -219,8 +221,8 @@ async function executeHandoffTransaction({
       }
     }
 
-    // Ensure a matching device row exists so relay/send (sender_device_id
-    // uuid FK) works with the device id minted for this session.
+    // Ensure a matching device row exists so relay/send (pending_messages
+    // sender_device_id uuid FK) works with the device id minted for this session.
     await tx
       .insert(devices)
       .values({
@@ -246,9 +248,10 @@ async function executeHandoffTransaction({
     const { refreshToken, sessionId } = await issueRefreshToken({
       userId,
       deviceId,
-      db: tx,
-    });
 
+      db: tx,
+
+    });
     const accessToken = await issueAccessToken({
       userId,
       deviceId,
@@ -290,7 +293,9 @@ router.post("/accept-legal", async (req: Request, res: Response) => {
     });
 
     res.json({ success: true });
+
   } catch {
+
     console.error("POST /accept-legal error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -367,7 +372,9 @@ router.post(
       await deliverOtpCode(phoneNumber, rawCode);
 
       res.json({ success: true });
+
     } catch {
+
       console.error("POST /otp/send error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -499,7 +506,9 @@ router.post(
         userId: result.userId,
         sessionId: result.sessionId,
       });
+
     } catch {
+
       console.error("POST /otp/verify error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -535,7 +544,9 @@ router.post("/check-existing-user", async (req: Request, res: Response) => {
 
     // Only return boolean — never leak userId here
     res.json({ exists: !!existingUser });
+
   } catch {
+
     console.error("POST /check-existing-user error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -587,8 +598,10 @@ router.post("/refresh", async (req: Request, res: Response) => {
       sessionId: result.sessionId,
     });
 
+
     res.json({ accessToken, refreshToken: result.refreshToken });
   } catch {
+
     console.error("POST /refresh error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -620,7 +633,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
     }
 
     // devices.id is a uuid column — coerce arbitrary client device ids to a
-    // uuid so the handoff can bind relay/send (FK on sender_device_id).
+    // uuid so the handoff can bind relay/send (FK on pending_messages.sender_device_id).
     const clientDeviceId = deviceInfo.deviceId;
     const deviceId =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientDeviceId)
@@ -647,7 +660,9 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
       message: `You're now logged in here on ${deviceInfo.deviceName}`,
       previousDevicesLoggedOut: handoff.revokedCount,
     });
+
   } catch {
+
     console.error("POST /login/handoff error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -687,7 +702,9 @@ router.post("/session/check", requireAuth, async (req: Request, res: Response) =
     }
 
     res.json({ isValid: true });
+
   } catch {
+
     console.error("POST /session/check error");
     res.status(500).json({ error: "Internal server error" });
   }

@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "@wpt/crypto": "workspace:*",
     "@wpt/shared": "workspace:*",
     "bcrypt": "^6.0.0",

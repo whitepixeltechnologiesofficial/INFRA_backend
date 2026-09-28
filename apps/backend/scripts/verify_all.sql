@@ -9,13 +9,13 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- R1 ── DB-2.2-V  pending_messages / message_relay schema
+-- R1 ── DB-2.2-V  pending_messages schema
 -- ---------------------------------------------------------------------------
 SELECT 'R1.1' AS check_id,
        CASE WHEN udt_name = 'message_type_enum' THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(udt_name, 'MISSING') AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'message_type';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'message_type';
 
 SELECT 'R1.2' AS check_id,
        CASE WHEN count(*) = 6 AND string_agg(enumlabel, ',' ORDER BY enumsortorder) =
@@ -25,36 +25,36 @@ FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
 WHERE t.typname = 'message_type_enum';
 
 SELECT 'R1.3' AS check_id,
-       CASE WHEN bool_or(conname = 'message_relay_message_type_check') THEN 'PASS' ELSE 'FAIL' END AS status,
+       CASE WHEN bool_or(conname = 'pending_messages_message_type_check') THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(string_agg(conname, ', ' ORDER BY conname), 'none') AS detail
 FROM pg_constraint
-WHERE conrelid = 'public.message_relay'::regclass
-  AND conname IN ('message_relay_message_type_check','message_relay_recipient_exactly_one','message_relay_size_bytes_non_negative');
+WHERE conrelid = 'public.pending_messages'::regclass
+  AND conname IN ('pending_messages_message_type_check','pending_messages_recipient_exactly_one','pending_messages_size_bytes_non_negative');
 
 SELECT 'R1.4' AS check_id, 'reply_to_id + voice_segment_group_id' AS label,
        string_agg(column_name, ', ' ORDER BY column_name) AS detail,
        CASE WHEN count(*) = 2 THEN 'PASS' ELSE 'FAIL' END AS status
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay'
+WHERE table_schema = 'public' AND table_name = 'pending_messages'
   AND column_name IN ('reply_to_id','voice_segment_group_id');
 
 SELECT 'R1.6' AS check_id,
        CASE WHEN count(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS status,
        string_agg(conname, ', ') AS detail
 FROM pg_constraint
-WHERE conrelid = 'public.message_relay'::regclass AND conname = 'message_relay_recipient_exactly_one';
+WHERE conrelid = 'public.pending_messages'::regclass AND conname = 'pending_messages_recipient_exactly_one';
 
 SELECT 'R1.7' AS check_id,
        CASE WHEN udt_name = 'bytea' THEN 'PASS' ELSE 'FAIL' END AS status,
        udt_name AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'ciphertext';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'ciphertext';
 
 SELECT 'R1.8' AS check_id,
        CASE WHEN column_default LIKE '%30%day%' THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(column_default, 'no default') AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'expires_at';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'expires_at';
 
 -- ---------------------------------------------------------------------------
 -- R2 ── DB-2.3-V  contact_hashes privacy design
@@ -135,6 +135,25 @@ SELECT 'R3.5' AS check_id,
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_name IN ('test_reports','test_report_evidence');
 
+-- R3.8 ── BE-R2.3: report_evidence.metadata_snapshot jsonb (TAD S6.6) + test mirror
+SELECT 'R3.8' AS check_id,
+       CASE WHEN count(*) FILTER (WHERE table_name = 'report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb'
+                                    AND is_nullable = 'YES') = 1
+             AND count(*) FILTER (WHERE table_name = 'test_report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status,
+       string_agg(table_name || '.' || column_name || ':' || data_type
+                  || CASE WHEN is_nullable = 'YES' THEN ' (nullable)'
+                          ELSE ' NOT NULL' END,
+                  ', ' ORDER BY table_name) AS detail
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name = 'metadata_snapshot'
+  AND table_name IN ('report_evidence','test_report_evidence');
+
 -- ---------------------------------------------------------------------------
 -- R4 ── DB-2.5-V  audit_log columns + moderation functions
 -- ---------------------------------------------------------------------------
@@ -163,10 +182,10 @@ SELECT 'R5.1' AS check_id, 'F-04 devices.user_id FK' AS label,
        CASE WHEN count(*) >= 1 AND bool_or(conname LIKE 'devices_user_id%') THEN 'PASS' ELSE 'FAIL' END AS status
 FROM pg_constraint WHERE conrelid = 'public.devices'::regclass AND contype = 'f';
 
-SELECT 'R5.2' AS check_id, 'F-05 message_relay.sender_device_id FK' AS label,
+SELECT 'R5.2' AS check_id, 'F-05 pending_messages.sender_device_id FK' AS label,
        string_agg(conname, ', ') AS detail,
        CASE WHEN count(*) >= 1 AND bool_or(conname LIKE '%sender_device_id%') THEN 'PASS' ELSE 'FAIL' END AS status
-FROM pg_constraint WHERE conrelid = 'public.message_relay'::regclass AND contype = 'f';
+FROM pg_constraint WHERE conrelid = 'public.pending_messages'::regclass AND contype = 'f';
 
 SELECT 'R5.3' AS check_id, 'F-06 sms_outbox status CHECK' AS label,
        (SELECT pg_get_constraintdef(oid) FROM pg_constraint
@@ -237,11 +256,11 @@ FROM information_schema.columns
 WHERE table_schema='public' AND column_name='purged_at'
   AND table_name IN ('report_evidence','test_report_evidence');
 
-SELECT 'R7.3' AS check_id, 'message_relay.media_path present' AS label,
+SELECT 'R7.3' AS check_id, 'pending_messages.media_path present' AS label,
        count(*)::text AS detail,
        CASE WHEN count(*) = 1 THEN 'PASS' ELSE 'FAIL' END AS status
 FROM information_schema.columns
-WHERE table_schema='public' AND table_name='message_relay' AND column_name='media_path';
+WHERE table_schema='public' AND table_name='pending_messages' AND column_name='media_path';
 
 SELECT 'R7.4' AS check_id, 'phone_reuse_cooldowns (phone_hash PK + cooldown_until)' AS label,
        string_agg(column_name || ':' || udt_name, ', ' ORDER BY ordinal_position) AS detail,
@@ -250,10 +269,10 @@ SELECT 'R7.4' AS check_id, 'phone_reuse_cooldowns (phone_hash PK + cooldown_unti
 FROM information_schema.columns
 WHERE table_schema='public' AND table_name='phone_reuse_cooldowns';
 
-SELECT 'R7.5' AS check_id, 'storage-purge trigger on message_relay' AS label,
+SELECT 'R7.5' AS check_id, 'storage-purge trigger on pending_messages' AS label,
        string_agg(tgname, ', ') AS detail,
        CASE WHEN count(*) >= 1 AND bool_or(tgname LIKE '%purge%') THEN 'PASS' ELSE 'FAIL' END AS status
-FROM pg_trigger WHERE tgrelid='public.message_relay'::regclass AND NOT tgisinternal;
+FROM pg_trigger WHERE tgrelid='public.pending_messages'::regclass AND NOT tgisinternal;
 
 SELECT 'R7.6' AS check_id, 'cron: daily-data-cleanup -> run_data_cleanup()' AS label,
        string_agg(schedule || '  ' || left(command, 60), ' | ') AS detail,
@@ -261,9 +280,9 @@ SELECT 'R7.6' AS check_id, 'cron: daily-data-cleanup -> run_data_cleanup()' AS l
             THEN 'PASS' ELSE 'FAIL' END AS status
 FROM cron.job;
 
-SELECT 'R7.6b' AS check_id, 'cron: cleanup-message-relay (every 5 min)' AS label,
+SELECT 'R7.6b' AS check_id, 'cron: cleanup-pending-messages (every 5 min)' AS label,
        string_agg(schedule || '  ' || left(command, 60), ' | ') AS detail,
-       CASE WHEN bool_or(jobname='cleanup-message-relay' AND schedule LIKE '%5%')
+       CASE WHEN bool_or(jobname='cleanup-pending-messages' AND schedule LIKE '%5%')
             THEN 'PASS' ELSE 'FAIL' END AS status
 FROM cron.job;
 
@@ -285,7 +304,7 @@ BEGIN;
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO public.message_relay (sender_device_id, recipient_device_id, ciphertext, message_type)
+    INSERT INTO public.pending_messages (sender_device_id, recipient_device_id, ciphertext, message_type)
     VALUES (gen_random_uuid(), gen_random_uuid(), decode('cafebabe','hex'), 'INVALID_TYPE');
     RAISE NOTICE 'FUNC.F1 FAIL: invalid message_type was ACCEPTED';
   EXCEPTION WHEN others THEN

@@ -7,7 +7,7 @@ import {
   aeadDecrypt,
   randomNonce,
 } from "./primitives.js";
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 /**
  * Double Ratchet — per-message forward secrecy + post-compromise security

@@ -1,13 +1,13 @@
 /**
  * DB-2.2 — Message relay routes.
  *
- * Used for functional verification of the message_relay table:
- *  - POST /relay/send  — create a message_relay row for a recipient
+ * Used for functional verification of the pending_messages table:
+ *  - POST /relay/send  — create a pending_messages row for a recipient
  *  - POST /relay/poll   — fetch undelivered messages for a device
  *  - POST /relay/ack    — mark a message as delivered
  *
  * The per-device model is: for a recipient with N devices, the sender
- * creates N message_relay rows — one per recipient_device_id.
+ * creates N pending_messages rows — one per recipient_device_id.
  */
 
 import { Router, type Request, type Response } from "express";
@@ -17,7 +17,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { devices } from "../db/devices-schema.js";
 import { users } from "../db/users-schema.js";
 import { blocks } from "../db/blocks-schema.js";
-import { messageRelay } from "../db/message-relay-schema.js";
+import { pendingMessages } from "../db/pending-messages-schema.js";
 import { phoneHash } from "../utils/phone-hash.js";
 
 const router: Router = Router();
@@ -124,8 +124,8 @@ function isValidHexCiphertext(v: unknown): v is string {
 /** Whether a message is addressed to a given user (user fan-out OR device ownership). */
 function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
   return or(
-    eq(messageRelay.recipientUserId, authUserId),
-    sql`EXISTS (SELECT 1 FROM devices WHERE devices.id = ${messageRelay.recipientDeviceId} AND devices.user_id = ${authUserId})`,
+    eq(pendingMessages.recipientUserId, authUserId),
+    sql`EXISTS (SELECT 1 FROM devices WHERE devices.id = ${pendingMessages.recipientDeviceId} AND devices.user_id = ${authUserId})`,
   )!;
 }
 
@@ -204,7 +204,7 @@ router.post("/send", async (req: Request, res: Response) => {
       }
 
       const rows = await db
-        .insert(messageRelay)
+        .insert(pendingMessages)
         .values(
           devList.map((d) => ({
             senderDeviceId: authDeviceId,
@@ -216,7 +216,7 @@ router.post("/send", async (req: Request, res: Response) => {
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           })),
         )
-        .returning({ id: messageRelay.id, recipientDeviceId: messageRelay.recipientDeviceId });
+        .returning({ id: pendingMessages.id, recipientDeviceId: pendingMessages.recipientDeviceId });
 
       res.json({ success: true, count: rows.length, rows });
       return;
@@ -231,7 +231,7 @@ router.post("/send", async (req: Request, res: Response) => {
     }
 
     const [row] = await db
-      .insert(messageRelay)
+      .insert(pendingMessages)
       .values({
         senderDeviceId: authDeviceId,
         recipientDeviceId,
@@ -243,14 +243,16 @@ router.post("/send", async (req: Request, res: Response) => {
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       })
       .returning({
-        id: messageRelay.id,
-        recipientDeviceId: messageRelay.recipientDeviceId,
-        recipientUserId: messageRelay.recipientUserId,
-        recipientGroupId: messageRelay.recipientGroupId,
+        id: pendingMessages.id,
+        recipientDeviceId: pendingMessages.recipientDeviceId,
+        recipientUserId: pendingMessages.recipientUserId,
+        recipientGroupId: pendingMessages.recipientGroupId,
       });
 
     res.json({ success: true, count: 1, rows: [row] });
+
   } catch {
+
     console.error("POST /relay/send error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -275,26 +277,26 @@ router.post("/poll", async (req: Request, res: Response) => {
 
     const rows = await db
       .select({
-        id: messageRelay.id,
-        senderDeviceId: messageRelay.senderDeviceId,
-        ciphertext: messageRelay.ciphertext,
-        messageType: messageRelay.messageType,
-        sizeBytes: messageRelay.sizeBytes,
-        createdAt: messageRelay.createdAt,
-        expiresAt: messageRelay.expiresAt,
+        id: pendingMessages.id,
+        senderDeviceId: pendingMessages.senderDeviceId,
+        ciphertext: pendingMessages.ciphertext,
+        messageType: pendingMessages.messageType,
+        sizeBytes: pendingMessages.sizeBytes,
+        createdAt: pendingMessages.createdAt,
+        expiresAt: pendingMessages.expiresAt,
         senderPhone: users.phoneNumber,
       })
-      .from(messageRelay)
-      .leftJoin(devices, eq(messageRelay.senderDeviceId, devices.id))
+      .from(pendingMessages)
+      .leftJoin(devices, eq(pendingMessages.senderDeviceId, devices.id))
       .leftJoin(users, eq(devices.userId, users.id))
       .where(
         and(
-          eq(messageRelay.recipientDeviceId, targetDevice),
-          isNull(messageRelay.deliveredAt),
-          eq(messageRelay.recipientUserId, authUserId),
+          eq(pendingMessages.recipientDeviceId, targetDevice),
+          isNull(pendingMessages.deliveredAt),
+          eq(pendingMessages.recipientUserId, authUserId),
         ),
       )
-      .orderBy(messageRelay.createdAt);
+      .orderBy(pendingMessages.createdAt);
 
     // DB-2.4: drop messages whose sender is a blocked partner (either direction),
     // so a blocked user's messages are never delivered to the recipient.
@@ -314,7 +316,9 @@ router.post("/poll", async (req: Request, res: Response) => {
         expiresAt: r.expiresAt,
       })),
     });
+
   } catch {
+
     console.error("POST /relay/poll error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -337,15 +341,15 @@ router.post("/ack", async (req: Request, res: Response) => {
 
     const db = getDb();
     const [updated] = await db
-      .update(messageRelay)
+      .update(pendingMessages)
       .set({ deliveredAt: new Date() })
       .where(
         and(
-          eq(messageRelay.id, messageId),
+          eq(pendingMessages.id, messageId),
           isAddressedToUser(authUserId),
         ),
       )
-      .returning({ id: messageRelay.id, deliveredAt: messageRelay.deliveredAt });
+      .returning({ id: pendingMessages.id, deliveredAt: pendingMessages.deliveredAt });
 
     if (!updated) {
       res.status(404).json({ error: "Message not found" });
@@ -353,7 +357,9 @@ router.post("/ack", async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, messageId: updated.id, deliveredAt: updated.deliveredAt });
+
   } catch {
+
     console.error("POST /relay/ack error");
     res.status(500).json({ error: "Internal server error" });
   }

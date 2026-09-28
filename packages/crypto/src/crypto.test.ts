@@ -9,7 +9,7 @@
 
 import { generateX25519KeyPair, generateIdentityKeyPair } from "./primitives.js";
 import { generatePreKeyBundle, initiateSession, respondToSession } from "./x3dh.js";
-import { initRatchet, ratchetEncrypt, ratchetDecrypt, type RatchetMessage } from "./double-ratchet.js";
+import { initRatchet, ratchetEncrypt, ratchetDecrypt } from "./double-ratchet.js";
 import {
   createSenderKey,
   distributeSenderKey,
