@@ -33,8 +33,6 @@ async function resolveSelfPhoneHash(authUserId: string): Promise<string | null> 
   return row ? phoneHash(row.phoneNumber) : null;
 }
 
-
-
 // ──────────────────────────────────────────────────
 // POST /blocks/block
 // Body: { blockedPhone: "+1234567890" } (E.164)
@@ -73,7 +71,9 @@ router.post("/block", async (req: Request, res: Response) => {
       .onConflictDoNothing();
 
     res.json({ success: true, blockedPhoneHash: blockedHash });
-  } catch (_err) {
+
+  } catch {
+
     console.error("POST /blocks/block error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -125,7 +125,9 @@ router.post("/unblock", async (req: Request, res: Response) => {
       );
 
     res.json({ success: true, unblockedPhoneHash: blockedHash });
-  } catch (_err) {
+
+  } catch {
+
     console.error("POST /blocks/unblock error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -167,7 +169,9 @@ router.post("/check", async (req: Request, res: Response) => {
       .limit(1);
 
     res.json({ isBlocked: !!row });
-  } catch (_err) {
+
+  } catch {
+
     console.error("POST /blocks/check error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -193,7 +197,9 @@ router.post("/list", async (_req: Request, res: Response) => {
       .where(eq(blocks.blockerPhoneHash, selfHash));
 
     res.json({ blockedPhoneHashes: rows.map((r) => r.blockedPhoneHash) });
-  } catch (_err) {
+
+  } catch {
+
     console.error("POST /blocks/list error");
     res.status(500).json({ error: "Internal server error" });
   }

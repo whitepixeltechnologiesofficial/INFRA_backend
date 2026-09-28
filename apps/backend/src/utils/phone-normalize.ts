@@ -34,12 +34,14 @@ export function normalizePhoneNumber(
 
     // E.164 format: +[country code][subscriber number], no spaces/dashes
     return parsed.format("E.164");
-  } catch (_err) {
+
+  } catch {
+
     // parsePhoneNumber throws on invalid input
     return null;
   }
 }
-
+ 
 /**
  * Validate and normalize a phone number, throwing an error if invalid.
  *

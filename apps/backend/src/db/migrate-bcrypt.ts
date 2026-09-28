@@ -1,12 +1,21 @@
 /**
  * Migration: Add token_lookup column + widen refresh_token_hash for bcrypt.
- * Run with: $env:DATABASE_URL="<url>"; npx tsx src/db/migrate-bcrypt.ts
+ * Run with: ALLOW_DESTRUCTIVE_DB=true npx tsx src/db/migrate-bcrypt.ts
  */
-import pg from "pg";
-const { Pool } = pg;
+import "dotenv/config";
+import { assertDestructiveAllowed } from "./guard.js";
+import { createPool } from "./pool.js";
+
+const STATEMENTS = [
+  "DELETE FROM public.sessions  (logs out every user)",
+  "ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS token_lookup varchar(32)",
+  "ALTER TABLE public.sessions ALTER COLUMN refresh_token_hash TYPE varchar(60)",
+];
 
 async function migrate() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  assertDestructiveAllowed("migrate-bcrypt", STATEMENTS);
+
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
 
   console.log("[migrate] Clearing sessions (old SHA-256 hashes incompatible with bcrypt)...");
   await pool.query(`DELETE FROM public.sessions`);

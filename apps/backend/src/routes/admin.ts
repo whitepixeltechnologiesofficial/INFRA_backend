@@ -16,6 +16,7 @@ import bcrypt from "bcryptjs";
 import { getDb } from "../db/index.js";
 import { dashboardAdmins } from "../db/dashboard-admins-schema.js";
 import { issueAdminToken, verifyAdminToken } from "../auth/jwt.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 
 const router: Router = Router();
 
@@ -25,9 +26,44 @@ const router: Router = Router();
 // 200 -> { success: true, adminId, role, email, token, expiresIn }
 // 400 -> { error: "email and password are required" }
 // 401 -> { error: "INVALID_CREDENTIALS" }
+// 429 -> { error: "RATE_LIMITED" }
 // 500 -> { error: "Internal server error" }
+//
+// This router is intentionally NOT mounted (see app.ts). The rate limit below
+// exists so that mounting it is not the moment unlimited online password
+// guessing against dashboard_admins becomes reachable: the limiter is attached
+// to the handler, not to the mount point, so it protects the route wherever it
+// is eventually wired up.
+//
+// Two limits, because either alone is insufficient — an IP cap alone does not
+// stop a distributed or botnet sweep, and an email cap alone lets one caller
+// spray many addresses. bcrypt-12 makes each guess expensive, which is the
+// other half of the defence.
 // ──────────────────────────────────────────────────
-router.post("/login", async (req: Request, res: Response) => {
+const adminLoginIpLimit = rateLimit({
+  maxRequests: 10,
+  windowMs: 15 * 60_000,
+  keyFn: (req) => `admin-login:ip:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
+  message: "Too many admin login attempts from this network. Try again later.",
+});
+
+const adminLoginEmailLimit = rateLimit({
+  maxRequests: 5,
+  windowMs: 15 * 60_000,
+  keyFn: (req) => {
+    const email = (req.body as { email?: unknown } | null)?.email;
+    return typeof email === "string" && email
+      ? `admin-login:email:${email.toLowerCase().trim()}`
+      : "admin-login:email:unknown";
+  },
+  message: "Too many admin login attempts for this account. Try again later.",
+});
+
+router.post(
+  "/login",
+  adminLoginIpLimit,
+  adminLoginEmailLimit,
+  async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body as { email?: string; password?: string };
     if (typeof email !== "string" || !email || typeof password !== "string" || !password) {
@@ -74,7 +110,8 @@ router.post("/login", async (req: Request, res: Response) => {
     console.error("POST /admin/login error", err);
     res.status(500).json({ error: "Internal server error" });
   }
-});
+  },
+);
 
 // ──────────────────────────────────────────────────
 // GET /admin/me

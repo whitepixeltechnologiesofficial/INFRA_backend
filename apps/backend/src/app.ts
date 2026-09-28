@@ -18,6 +18,9 @@ import {
   unregisterSocket,
 } from "./ws/socket-registry.js";
 import { verifyAccessToken } from "./auth/jwt.js";
+import { eq } from "drizzle-orm";
+import { getDb } from "./db/index.js";
+import { sessions } from "./db/sessions-schema.js";
 
 export type BackendServer = {
   httpServer: HttpServer;
@@ -97,8 +100,37 @@ export function createApp(): BackendServer {
         next(new Error("Token deviceId mismatch"));
         return;
       }
+
+      // TAD §9.5 requires a connection-time revocation check IN ADDITION to the
+      // 1h token expiry. Without this, a socket that authenticated before a
+      // force-logout stays connected and keeps receiving messages until its
+      // access token expires — a 1-hour window on every logout.
+      const db = getDb();
+      const [session] = await db
+        .select({ revokedAt: sessions.revokedAt, userId: sessions.userId })
+        .from(sessions)
+        .where(eq(sessions.id, payload.sid))
+        .limit(1);
+
+      if (!session) {
+        next(new Error("Session not found"));
+        return;
+      }
+      if (session.revokedAt !== null) {
+        next(new Error("Session revoked"));
+        return;
+      }
+      if (session.userId !== payload.sub) {
+        next(new Error("Session userId mismatch"));
+        return;
+      }
+
       next();
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("Session")) {
+        next(err);
+        return;
+      }
       next(new Error("Invalid token"));
     }
   });
