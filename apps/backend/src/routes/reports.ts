@@ -101,6 +101,10 @@ router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
           reporterPhoneHash: selfHash,
           reportedPhoneHash: reportedHash,
           status: "pending",
+          // Evidence purge rule S15.4: expires 30 days after submission
+          // (created_at defaults to now at insert). DB trigger
+          // tg_reports_evidence_expiry recomputes it for SQL-level inserts.
+          evidenceExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         })
         .returning({ id: reports.id });
 
