@@ -11,7 +11,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { eq, and, or, isNull, sql } from "drizzle-orm";
+import { eq, and, or, isNull, isNotNull, gt, inArray, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { requireAuth } from "../middleware/auth.js";
 import { devices } from "../db/devices-schema.js";
@@ -19,6 +19,7 @@ import { users } from "../db/users-schema.js";
 import { blocks } from "../db/blocks-schema.js";
 import { pendingMessages } from "../db/pending-messages-schema.js";
 import { phoneHash } from "../utils/phone-hash.js";
+import { pushToDevice } from "../ws/socket-registry.js";
 
 const router: Router = Router();
 
@@ -51,26 +52,7 @@ async function resolvePhoneHashForUser(
   return row ? phoneHash(row.phoneNumber) : null;
 }
 
-/** Resolve the recipient's phone hash from a userId or deviceId (group = null). */
-async function resolveRecipientPhoneHash(
-  recipientUserId: string | undefined,
-  recipientDeviceId: string | undefined,
-  db: ReturnType<typeof getDb>,
-): Promise<string | null> {
-  if (recipientUserId) {
-    return resolvePhoneHashForUser(recipientUserId, db);
-  }
-  if (recipientDeviceId) {
-    const [row] = await db
-      .select({ phoneNumber: users.phoneNumber })
-      .from(devices)
-      .innerJoin(users, eq(devices.userId, users.id))
-      .where(eq(devices.id, recipientDeviceId))
-      .limit(1);
-    return row ? phoneHash(row.phoneNumber) : null;
-  }
-  return null;
-}
+
 
 /** True when a block exists between two hashes in EITHER direction. */
 async function hasBlockBetween(
@@ -130,29 +112,51 @@ function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
 }
 
 // ──────────────────────────────────────────────────
-// POST /relay/send
+// POST /relay/send   (BE-5.4)
+//
+// The server is a BLIND relay: it stores and forwards opaque ciphertext
+// and never decrypts. Each recipient DEVICE has its own Double Ratchet
+// session, so a 1:1 send carries one ciphertext PER recipient device.
+//
 // Body: {
-//   recipientUserId?: string,
-//   recipientDeviceId?: string,
-//   recipientGroupId?: string,
-//   ciphertext: string,   // hex-encoded ciphertext
+//   clientMessageId: string,          // client-generated UUID, makes retries idempotent
 //   messageType?: string,
+//   // 1:1 (preferred) — per-device envelopes, all devices of ONE user:
+//   recipients?: [{ deviceId: string, ciphertext: string /* hex */ }],
+//   // Legacy DB-2.2-V shapes, still accepted:
+//   ciphertext?: string,              // hex, same blob to every targeted device
+//   recipientUserId?: string,         //   -> one row per active device of that user
+//   recipientDeviceId?: string,       //   -> one row for that device
+//   recipientGroupId?: string,        //   -> rejected until BE-5.7
 // }
-// If only recipientUserId is given, one row is created per device of
-// that user. Otherwise a single row is created for the given device/group.
+//
+// Response: { success, duplicate, count, rows: [{ id, recipientDeviceId, pushed }] }
+//   pushed = a live socket was addressed. false is normal (recipient offline):
+//   the row is durable and is delivered via /relay/poll.
 // ──────────────────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_RECIPIENT_DEVICES = 20;
+const MESSAGE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // placeholder until BE-5.6 confirms TAD retention
+
+type Target = { deviceId: string; userId: string | null; ciphertext: Buffer };
+
 router.post("/send", async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
     const authDeviceId = res.locals.auth!.deviceId;
 
     const {
+      clientMessageId,
+      recipients,
       recipientUserId,
       recipientDeviceId,
       recipientGroupId,
       ciphertext,
       messageType,
     } = req.body as {
+      clientMessageId?: string;
+      recipients?: Array<{ deviceId?: string; ciphertext?: string }>;
       recipientUserId?: string;
       recipientDeviceId?: string;
       recipientGroupId?: string;
@@ -160,8 +164,8 @@ router.post("/send", async (req: Request, res: Response) => {
       messageType?: string;
     };
 
-    if (!isValidHexCiphertext(ciphertext)) {
-      res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+    if (clientMessageId !== undefined && (typeof clientMessageId !== "string" || !UUID_RE.test(clientMessageId))) {
+      res.status(400).json({ error: "INVALID_CLIENT_MESSAGE_ID" });
       return;
     }
 
@@ -171,88 +175,228 @@ router.post("/send", async (req: Request, res: Response) => {
       return;
     }
 
-    // Exactly one recipient type must be specified.
-    const provided = [recipientUserId, recipientDeviceId, recipientGroupId].filter(Boolean).length;
-    if (provided !== 1) {
-      res.status(400).json({ error: "Provide exactly one of recipientUserId, recipientDeviceId, recipientGroupId" });
+    // Exactly one addressing mode.
+    const modes = [recipients, recipientUserId, recipientDeviceId, recipientGroupId].filter(
+      (v) => v !== undefined && v !== null && v !== "",
+    ).length;
+    if (modes !== 1) {
+      res.status(400).json({
+        error: "Provide exactly one of recipients, recipientUserId, recipientDeviceId, recipientGroupId",
+      });
       return;
     }
 
     const db = getDb();
 
-    // ── DB-2.4: bidirectional block enforcement before insert ──
-    const senderHash = await resolvePhoneHashForUser(authUserId, db);
-    const recipientHash = await resolveRecipientPhoneHash(recipientUserId, recipientDeviceId, db);
-    if (senderHash && recipientHash && (await hasBlockBetween(senderHash, recipientHash, db))) {
-      res.status(403).json({ error: "BLOCKED", message: "Messaging between these two users is blocked" });
+    // ── Sender device must still be live. The access token stays valid for up to
+    //    1h after a revoke (REST does not re-check the session), so check the row. ──
+    const [senderDevice] = await db
+      .select({ isActive: devices.isActive, revokedAt: devices.revokedAt })
+      .from(devices)
+      .where(and(eq(devices.id, authDeviceId), eq(devices.userId, authUserId)))
+      .limit(1);
+    if (!senderDevice || !senderDevice.isActive || senderDevice.revokedAt !== null) {
+      res.status(403).json({ error: "SENDER_DEVICE_REVOKED" });
       return;
     }
 
-    const ciphertextBytes = Buffer.from(ciphertext, "hex");
-    const sizeBytes = ciphertextBytes.length;
+    // Group sends were unreachable before (the exactly-one rule above conflicts with
+    // the group row needing a relay device) and real fan-out is BE-5.7. Reject explicitly.
+    if (recipientGroupId) {
+      res.status(400).json({ error: "GROUP_SEND_NOT_IMPLEMENTED", message: "Group fan-out is BE-5.7" });
+      return;
+    }
 
-    // If recipientUserId is given, fan out one row per device.
-    if (recipientUserId) {
-      const devList = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(and(eq(devices.userId, recipientUserId), eq(devices.isActive, true)));
+    // ── Build the list of (device, ciphertext) targets ──
+    let targets: Target[] = [];
+    let targetUserId: string | null = null;
 
-      if (devList.length === 0) {
-        res.status(404).json({ error: "Recipient has no active devices" });
+    if (recipients !== undefined) {
+      if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > MAX_RECIPIENT_DEVICES) {
+        res.status(400).json({ error: `recipients must be 1..${MAX_RECIPIENT_DEVICES} entries` });
         return;
       }
-
+      const seen = new Set<string>();
+      for (const r of recipients) {
+        if (!r || typeof r.deviceId !== "string" || !UUID_RE.test(r.deviceId) || !isValidHexCiphertext(r.ciphertext)) {
+          res.status(400).json({ error: "each recipient needs deviceId (uuid) and hex ciphertext" });
+          return;
+        }
+        if (seen.has(r.deviceId)) {
+          res.status(400).json({ error: "DUPLICATE_RECIPIENT_DEVICE" });
+          return;
+        }
+        seen.add(r.deviceId);
+        if (r.deviceId === authDeviceId) {
+          res.status(400).json({ error: "CANNOT_SEND_TO_OWN_DEVICE" });
+          return;
+        }
+      }
       const rows = await db
+        .select({ id: devices.id, userId: devices.userId })
+        .from(devices)
+        .where(
+          and(
+            inArray(devices.id, recipients.map((r) => r.deviceId!)),
+            eq(devices.isActive, true),
+            isNull(devices.revokedAt),
+          ),
+        );
+      if (rows.length !== recipients.length) {
+        res.status(404).json({ error: "RECIPIENT_DEVICE_NOT_FOUND" });
+        return;
+      }
+      const owners = new Set(rows.map((r) => r.userId));
+      if (owners.size !== 1) {
+        res.status(400).json({ error: "RECIPIENT_DEVICES_MUST_BELONG_TO_ONE_USER" });
+        return;
+      }
+      targetUserId = rows[0]!.userId;
+      targets = recipients.map((r) => ({
+        deviceId: r.deviceId!,
+        userId: targetUserId,
+        ciphertext: Buffer.from(r.ciphertext!, "hex"),
+      }));
+    } else {
+      if (!isValidHexCiphertext(ciphertext)) {
+        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+        return;
+      }
+      const blob = Buffer.from(ciphertext, "hex");
+
+      if (recipientUserId) {
+        const devList = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(
+            and(eq(devices.userId, recipientUserId), eq(devices.isActive, true), isNull(devices.revokedAt)),
+          );
+        if (devList.length === 0) {
+          res.status(404).json({ error: "Recipient has no active devices" });
+          return;
+        }
+        targetUserId = recipientUserId;
+        targets = devList.map((d) => ({ deviceId: d.id, userId: recipientUserId, ciphertext: blob }));
+      } else if (recipientDeviceId) {
+        // The recipient_exactly_one CHECK is user-XOR-group, so a device-addressed
+        // 1:1 row MUST carry the device owner's user id (previously this path
+        // inserted recipient_user_id = NULL and the CHECK rejected it).
+        const [dev] = await db
+          .select({ userId: devices.userId })
+          .from(devices)
+          .where(
+            and(eq(devices.id, recipientDeviceId), eq(devices.isActive, true), isNull(devices.revokedAt)),
+          )
+          .limit(1);
+        if (!dev) {
+          res.status(404).json({ error: "RECIPIENT_DEVICE_NOT_FOUND" });
+          return;
+        }
+        targetUserId = dev.userId;
+        targets = [{ deviceId: recipientDeviceId, userId: dev.userId, ciphertext: blob }];
+      } else {
+        res.status(400).json({ error: "recipientDeviceId is required" });
+        return;
+      }
+    }
+
+    // ── DB-2.4: bidirectional block enforcement before insert ──
+    if (targetUserId) {
+      const senderHash = await resolvePhoneHashForUser(authUserId, db);
+      const recipientHash = await resolvePhoneHashForUser(targetUserId, db);
+      if (senderHash && recipientHash && (await hasBlockBetween(senderHash, recipientHash, db))) {
+        res.status(403).json({ error: "BLOCKED", message: "Messaging between these two users is blocked" });
+        return;
+      }
+    }
+
+    // ── Idempotency: a retried send returns the original rows, inserts nothing, pushes nothing. ──
+    const findExisting = () =>
+      db
+        .select({ id: pendingMessages.id, recipientDeviceId: pendingMessages.recipientDeviceId })
+        .from(pendingMessages)
+        .where(
+          and(
+            eq(pendingMessages.senderDeviceId, authDeviceId),
+            eq(pendingMessages.clientMessageId, clientMessageId!),
+            inArray(pendingMessages.recipientDeviceId, targets.map((t) => t.deviceId)),
+          ),
+        );
+
+    if (clientMessageId) {
+      const existing = await findExisting();
+      if (existing.length === targets.length) {
+        res.json({
+          success: true,
+          duplicate: true,
+          count: existing.length,
+          rows: existing.map((r) => ({ ...r, pushed: false })),
+        });
+        return;
+      }
+    }
+
+    const expiresAt = new Date(Date.now() + MESSAGE_TTL_MS);
+    let inserted;
+    try {
+      inserted = await db
         .insert(pendingMessages)
         .values(
-          devList.map((d) => ({
+          targets.map((t) => ({
             senderDeviceId: authDeviceId,
-            recipientDeviceId: d.id,
-            recipientUserId,
-            ciphertext: ciphertextBytes,
+            recipientDeviceId: t.deviceId,
+            recipientUserId: t.userId,
+            recipientGroupId: null,
+            ciphertext: t.ciphertext,
             messageType: msgType,
-            sizeBytes,
-            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            sizeBytes: t.ciphertext.length,
+            expiresAt,
+            clientMessageId: clientMessageId ?? null,
           })),
         )
-        .returning({ id: pendingMessages.id, recipientDeviceId: pendingMessages.recipientDeviceId });
-
-      res.json({ success: true, count: rows.length, rows });
-      return;
+        .returning({
+          id: pendingMessages.id,
+          recipientDeviceId: pendingMessages.recipientDeviceId,
+          recipientUserId: pendingMessages.recipientUserId,
+          createdAt: pendingMessages.createdAt,
+        });
+    } catch (err) {
+      // Two concurrent retries of the same clientMessageId: the unique index
+      // (migration 018) rejects the loser; treat it as a duplicate.
+      const code = (err as { code?: string; cause?: { code?: string } }).code
+        ?? (err as { cause?: { code?: string } }).cause?.code;
+      if (clientMessageId && code === "23505") {
+        const existing = await findExisting();
+        res.json({
+          success: true,
+          duplicate: true,
+          count: existing.length,
+          rows: existing.map((r) => ({ ...r, pushed: false })),
+        });
+        return;
+      }
+      throw err;
     }
 
-    // Single-device or group recipient. recipientDeviceId is required
-    // by the schema (NOT NULL); for a group message it targets the
-    // sender's chosen relay device.
-    if (!recipientDeviceId) {
-      res.status(400).json({ error: "recipientDeviceId is required" });
-      return;
-    }
+    // ── Relay: durable first, then best-effort real-time push. ──
+    const rows = inserted.map((row, i) => {
+      let pushed = false;
+      if (row.recipientUserId) {
+        pushed = pushToDevice(row.recipientUserId, row.recipientDeviceId, "message", {
+          id: row.id,
+          senderDeviceId: authDeviceId,
+          ciphertext: targets[i]!.ciphertext.toString("hex"),
+          messageType: msgType,
+          sizeBytes: targets[i]!.ciphertext.length,
+          clientMessageId: clientMessageId ?? null,
+          createdAt: row.createdAt,
+        });
+      }
+      return { id: row.id, recipientDeviceId: row.recipientDeviceId, pushed };
+    });
 
-    const [row] = await db
-      .insert(pendingMessages)
-      .values({
-        senderDeviceId: authDeviceId,
-        recipientDeviceId,
-        recipientUserId: null,
-        recipientGroupId: recipientGroupId ?? null,
-        ciphertext: ciphertextBytes,
-        messageType: msgType,
-        sizeBytes,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      })
-      .returning({
-        id: pendingMessages.id,
-        recipientDeviceId: pendingMessages.recipientDeviceId,
-        recipientUserId: pendingMessages.recipientUserId,
-        recipientGroupId: pendingMessages.recipientGroupId,
-      });
-
-    res.json({ success: true, count: 1, rows: [row] });
-
+    res.json({ success: true, duplicate: false, count: rows.length, rows });
   } catch {
-
     console.error("POST /relay/send error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -284,6 +428,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         sizeBytes: pendingMessages.sizeBytes,
         createdAt: pendingMessages.createdAt,
         expiresAt: pendingMessages.expiresAt,
+        clientMessageId: pendingMessages.clientMessageId,
         senderPhone: users.phoneNumber,
       })
       .from(pendingMessages)
@@ -293,6 +438,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         and(
           eq(pendingMessages.recipientDeviceId, targetDevice),
           isNull(pendingMessages.deliveredAt),
+          gt(pendingMessages.expiresAt, new Date()),
           eq(pendingMessages.recipientUserId, authUserId),
         ),
       )
@@ -314,6 +460,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         sizeBytes: r.sizeBytes,
         createdAt: r.createdAt,
         expiresAt: r.expiresAt,
+        clientMessageId: r.clientMessageId,
       })),
     });
 
@@ -327,39 +474,53 @@ router.post("/poll", async (req: Request, res: Response) => {
 // ──────────────────────────────────────────────────
 // POST /relay/ack
 // Body: { messageId: string }
-// Marks a relayed message as delivered.
+// The RECIPIENT DEVICE confirms receipt. Scoped to the authenticated
+// device, not just the user: acking on behalf of a sibling device would
+// let the cleanup job delete a message that device never received.
+// Idempotent: acking an already-acked message succeeds.
 // ──────────────────────────────────────────────────
 router.post("/ack", async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
+    const authDeviceId = res.locals.auth!.deviceId;
     const { messageId } = req.body as { messageId?: string };
 
-    if (typeof messageId !== "string" || !messageId) {
+    if (typeof messageId !== "string" || !UUID_RE.test(messageId)) {
       res.status(400).json({ error: "messageId is required" });
       return;
     }
 
     const db = getDb();
+    const mine = and(
+      eq(pendingMessages.id, messageId),
+      eq(pendingMessages.recipientDeviceId, authDeviceId),
+      isAddressedToUser(authUserId),
+    );
+
     const [updated] = await db
       .update(pendingMessages)
       .set({ deliveredAt: new Date() })
-      .where(
-        and(
-          eq(pendingMessages.id, messageId),
-          isAddressedToUser(authUserId),
-        ),
-      )
+      .where(and(mine, isNull(pendingMessages.deliveredAt)))
       .returning({ id: pendingMessages.id, deliveredAt: pendingMessages.deliveredAt });
 
-    if (!updated) {
-      res.status(404).json({ error: "Message not found" });
+    if (updated) {
+      res.json({ success: true, messageId: updated.id, deliveredAt: updated.deliveredAt });
       return;
     }
 
-    res.json({ success: true, messageId: updated.id, deliveredAt: updated.deliveredAt });
+    const [already] = await db
+      .select({ id: pendingMessages.id, deliveredAt: pendingMessages.deliveredAt })
+      .from(pendingMessages)
+      .where(and(mine, isNotNull(pendingMessages.deliveredAt)))
+      .limit(1);
 
+    if (already) {
+      res.json({ success: true, messageId: already.id, deliveredAt: already.deliveredAt, alreadyAcked: true });
+      return;
+    }
+
+    res.status(404).json({ error: "Message not found" });
   } catch {
-
     console.error("POST /relay/ack error");
     res.status(500).json({ error: "Internal server error" });
   }

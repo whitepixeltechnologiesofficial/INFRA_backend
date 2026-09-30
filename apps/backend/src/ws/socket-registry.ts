@@ -132,3 +132,33 @@ export function disconnectDevice(userId: string, deviceId: string): void {
     }
   }
 }
+
+
+/**
+ * BE-5.4 — Push an event to the live socket(s) of exactly ONE device.
+ *
+ * Used by the message pipeline to deliver a relayed envelope in real time.
+ * Returns true if at least one live socket was addressed. A `false` return
+ * is NOT an error: the message is already durable in pending_messages and
+ * the recipient will get it via POST /relay/poll on (re)connect.
+ */
+export function pushToDevice(
+  userId: string,
+  deviceId: string,
+  event: string,
+  payload: unknown,
+): boolean {
+  if (!ioRef) return false;
+
+  const set = connections.get(userId);
+  if (!set) return false;
+
+  let pushed = false;
+  for (const entry of set) {
+    if (entry.deviceId === deviceId) {
+      ioRef.to(entry.socketId).emit(event, payload);
+      pushed = true;
+    }
+  }
+  return pushed;
+}

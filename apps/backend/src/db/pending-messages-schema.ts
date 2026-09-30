@@ -18,6 +18,7 @@ import {
   integer,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { devices } from "./devices-schema.js";
 
@@ -55,6 +56,8 @@ export const pendingMessages = pgTable(
     mediaPath: text("media_path"),
     replyToId: uuid("reply_to_id"),
     voiceSegmentGroupId: uuid("voice_segment_group_id"),
+    // BE-5.4: client-generated id; makes send retries idempotent (migration 018).
+    clientMessageId: uuid("client_message_id"),
   },
   (table) => [
     index("idx_pending_messages_recipient_user").on(table.recipientUserId),
@@ -63,5 +66,10 @@ export const pendingMessages = pgTable(
     index("idx_pending_messages_expires").on(table.expiresAt),
     index("idx_pending_messages_created").on(table.createdAt),
     index("idx_pending_messages_voice_group").on(table.voiceSegmentGroupId),
+    uniqueIndex("pending_messages_client_msg_uniq_idx").on(
+      table.senderDeviceId,
+      table.recipientDeviceId,
+      table.clientMessageId,
+    ),
   ],
-);
+);
