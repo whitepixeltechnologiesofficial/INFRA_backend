@@ -325,7 +325,7 @@ async function main() {
       await pool.query(`DELETE FROM pending_messages WHERE sender_device_id = ANY($1::uuid[]) OR recipient_device_id = ANY($1::uuid[])`, [deviceIds]);
       await pool.query(`DELETE FROM devices WHERE id = ANY($1::uuid[])`, [deviceIds]);
     }
-    if (userIds.length) await pool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [userIds]);
+    if (userIds.length) await pool.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [userIds]);
     const after = await pool.query(`SELECT count(*)::int AS n FROM pending_messages`);
     console.log(`\npending_messages rows before/after: ${before.rows[0].n}/${after.rows[0].n}`);
     await new Promise<void>((r) => io.close(() => r()));
