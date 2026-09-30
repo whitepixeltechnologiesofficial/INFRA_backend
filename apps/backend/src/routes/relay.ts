@@ -52,26 +52,7 @@ async function resolvePhoneHashForUser(
   return row ? phoneHash(row.phoneNumber) : null;
 }
 
-/** Resolve the recipient's phone hash from a userId or deviceId (group = null). */
-async function resolveRecipientPhoneHash(
-  recipientUserId: string | undefined,
-  recipientDeviceId: string | undefined,
-  db: ReturnType<typeof getDb>,
-): Promise<string | null> {
-  if (recipientUserId) {
-    return resolvePhoneHashForUser(recipientUserId, db);
-  }
-  if (recipientDeviceId) {
-    const [row] = await db
-      .select({ phoneNumber: users.phoneNumber })
-      .from(devices)
-      .innerJoin(users, eq(devices.userId, users.id))
-      .where(eq(devices.id, recipientDeviceId))
-      .limit(1);
-    return row ? phoneHash(row.phoneNumber) : null;
-  }
-  return null;
-}
+
 
 /** True when a block exists between two hashes in EITHER direction. */
 async function hasBlockBetween(
