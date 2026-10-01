@@ -1,0 +1,5 @@
+<!-- Add these to your existing Flutter app's AndroidManifest.xml. -->
+<uses-permission android:name="android.permission.INTERNET" />
+
+<!-- Development only: the LAN mock uses http://PC-IP:8787. -->
+<!-- Add android:usesCleartextTraffic="true" to the <application> element. -->

@@ -1,0 +1,12 @@
+{
+  "name": "wpt-sealine-linking-r1",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev:server": "pnpm --filter @wpt/mock-server dev",
+    "dev:web": "pnpm --filter @wpt/web dev",
+    "build": "pnpm --filter @wpt/web build",
+    "typecheck": "pnpm --filter @wpt/web typecheck && pnpm --filter @wpt/api-client typecheck && pnpm --filter @wpt/shared typecheck && pnpm --filter @wpt/crypto typecheck",
+    "test": "pnpm --filter @wpt/api-client test"
+  }
+}

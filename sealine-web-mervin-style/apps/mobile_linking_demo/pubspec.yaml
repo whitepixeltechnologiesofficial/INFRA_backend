@@ -1,0 +1,15 @@
+name: sealine_mobile_linking_demo
+description: Sealine physical-phone QR linking reference implementation.
+publish_to: "none"
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mobile_scanner: ^6.0.2
+  web_socket_channel: ^3.0.2
+
+flutter:
+  uses-material-design: true

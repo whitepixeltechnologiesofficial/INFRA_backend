@@ -1,0 +1,23 @@
+{
+  "name": "@wpt/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock": "./src/mock/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@wpt/shared": "workspace:*",
+    "socket.io-client": "4.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

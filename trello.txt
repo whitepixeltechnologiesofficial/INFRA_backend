@@ -1,0 +1,288 @@
+WEB-R1.0: Mock API Layer for Web Linking (Build First)
+PRIORITY: Build FIRST, before WEB-R1.2–R1.8. Replaces Sprint 1's QR-1.0 (archived).
+
+WHAT: A mock of the Web-linking backend inside packages/api-client, so Web can be built before BE-6.1 (Team Charlie) exists. It must fake:
+(1) Linking channel: Web registers token + identity bundle; mock enforces 60s TTL, rejects expired or reused tokens.
+(2) Simulated scan: on a trigger, mock PUSHES access + refresh tokens down the same channel (push, not request/response).
+(3) Log-off: revokes the session; old refresh token rejected afterwards.
+(4) force_logout push, simulating a new-phone login (for R1.8).
+(5) Phone offline/online events (for R1.4/R1.5). Web keeps working throughout.
+
+REFERENCE: TAD §12.1, §7.1, §7.3, §9.5; PRD Sections 22–24.
+
+FIRST STEP: Check whether QR-1.0's mock already exists in packages/api-client. If it does and matches the above, reuse it. Don't rebuild.
+
+ALLOWED: A small mock server or in-package fake behind api-client. API_BASE_URL in apps/web/.env.example points at it.
+
+NOT ALLOWED: Fake logic inside screen files. Any mock code in apps/web/qr-login (WEBR-1.9 deletes it).
+
+CONTRACT: Define request, response and push-message shapes as types in packages/shared. BE-6.1 must match them exactly. Any later shape change: tell Team Charlie.
+
+EDGE CASE: Token expires mid-scan: mock returns a clear "expired" error, not a generic one.
+
+WHERE: packages/api-client, packages/shared.
+
+DEPENDS ON: WEB-R1.1.
+
+COMMON MISTAKE: A mock that only answers single requests. The real flow pushes, so the mock must too.
+
+VERIFY: Each of (1)–(5) can be triggered from a test. Changing API_BASE_URL is the only change needed to point Web at a real backend.
+WEB-R1.1: Confirm and Align the Next.js Scaffold
+Description
+Edit
+WHAT: Verify apps/web is correctly wired into the monorepo — check next.config.js, package.json workspace dependencies (@wpt/crypto, @wpt/api-client), and that pnpm dev starts the app without errors.
+
+REFERENCE: TAD monorepo structure section; Sprint 1 audit finding that Web Epic 1 abandoned this stack entirely for Express/Socket.io.
+
+WHY THIS MATTERS: Everything else in this epic builds on this scaffold. If it's broken or misconfigured, every later card inherits the problem.
+
+ALLOWED: Fixing config errors, adding missing workspace references, updating dependency versions if genuinely broken.
+
+NOT ALLOWED: Introducing a new framework, server, or build tool not already in the monorepo. Do not touch apps/web/qr-login.
+
+EDGE CASE: Silent build warnings that don't block dev but would block build — fix now, don't defer.
+
+WHERE: apps/web/ (root config files only, no feature code yet).
+
+DEPENDS ON: Nothing — first card of the sprint for this track.
+
+COMMON MISTAKE: Assuming "it runs" means "it's correctly wired" — confirm shared packages actually resolve, not just that the dev server boots.
+
+VERIFY: pnpm --filter web dev runs clean, pnpm --filter web build completes with zero errors, imports from @wpt/crypto and @wpt/api-client resolve correctly in a test file.
+
+
+WEB-R1.2: QR Code Generation and Display
+CORRECTED 25 Sep: earlier wording said the backend issues the linking token. TAD §12.1 says Web generates it. This version follows the TAD.
+
+WHAT: The QR display screen, inside the Next.js app. Web generates a linking token plus its own identity bundle (TAD §8.6), registers both with the backend over the linking channel, then renders the token as a QR. The phone scans it; the backend pushes tokens down the channel and Web moves to the chat list.
+
+REFERENCE: TAD §12.1, §8.6; PRD 22.1–22.5.
+
+WHY THIS MATTERS: This is the entry point to the entire Web app. Nothing else works until a user can link a session.
+
+ALLOWED: A well-maintained QR npm package (not a vendored library like the old implementation). Token generated with a cryptographically secure source (crypto.getRandomValues).
+
+NOT ALLOWED: A separate Express endpoint; it lives inside Next.js. Math.random() for tokens. Calling the backend directly from screen files: every call goes through packages/api-client (WEB-R1.0 mock now, real backend via BE-6.1 later).
+
+EDGE CASE: Linking channel unreachable when the page loads: show a retry state, not a blank screen or crash.
+
+WHERE: apps/web/app/ (QR display route/component).
+
+DEPENDS ON: WEB-R1.0, WEB-R1.1.
+
+COMMON MISTAKE: Rendering the QR without registering the token with the backend first. The backend can't enforce the 60s expiry on a token it never received.
+
+VERIFY: QR renders; the token is registered through api-client before it is displayed; a simulated scan on the mock pushes tokens and Web lands on the chat list.
+WEB-R1.3: QR Auto-Expiry and Regeneration
+WHAT: The displayed QR code automatically expires and is replaced with a new one every 60 seconds, with no user action required.
+
+REFERENCE: PRD security requirement — QR codes must not remain valid indefinitely.
+
+WHY THIS MATTERS: A QR code that never expires is a standing security hole — anyone who screenshots it could link a session later.
+
+ALLOWED: Client-side timer triggering a new token fetch; a visual countdown is a nice-to-have, not required.
+
+NOT ALLOWED: Reusing the same token past 60 seconds under any circumstance, including network lag.
+
+EDGE CASE: If the user is mid-scan when the code expires, the backend should reject the stale token cleanly with a clear "expired, refresh" response, not a generic error.
+
+WHERE: Same component as WEB-R1.2.
+
+DEPENDS ON: WEB-R1.2.
+
+COMMON MISTAKE: Expiring the code visually on the frontend while the backend still accepts the old token — expiry must be enforced server-side.
+
+VERIFY: Wait 61+ seconds without scanning, confirm a new QR appears and the old token is rejected if scanned afterward.
+WEB-R1.4: Web Session Survives Phone Going Offline
+Description
+Edit
+WHAT: Once a session is linked, the Web app continues functioning fully even if the paired phone loses internet connectivity.
+
+REFERENCE: TAD session architecture — Web is not a "mirror" dependent on live phone connection.
+
+WHY THIS MATTERS: This is a core differentiator from a naive implementation — users expect Web to behave like WhatsApp Web, not freeze when their phone's signal drops.
+
+ALLOWED: Backend-mediated message flow that doesn't require the phone to be online for Web to function.
+
+NOT ALLOWED: Any UI state that blocks interaction with a "phone offline" modal or similar.
+
+EDGE CASE: Phone goes offline mid-message-send from Web — the message should still queue and send via backend relay, not fail silently.
+
+WHERE: Session state management in apps/web/app/, backend session endpoints.
+
+DEPENDS ON: WEB-R1.2, WEB-R1.3, and existing backend session infrastructure (sessions-schema.ts).
+
+COMMON MISTAKE: Building this as a direct phone-to-browser connection instead of routing everything through the backend.
+
+VERIFY: Link a session, turn off the paired phone's Wi-Fi/data entirely, confirm Web remains fully interactive.
+
+WEB-R1.5: Invisible Reconnect Sync
+WHAT: When the phone reconnects after being offline, any state sync happens with no visible "syncing" indicator, spinner, or delay perceptible to the user.
+
+REFERENCE: Locked design decision, Phase 5 Web design.
+
+WHY THIS MATTERS: A visible sync state makes the app feel fragile; competitors don't show this, and it was explicitly called out as a design requirement.
+
+ALLOWED: Background sync logic of any kind, as long as nothing is shown to the user.
+
+NOT ALLOWED: Toast notifications, spinners, or banners referencing sync state.
+
+EDGE CASE: If sync genuinely takes several seconds due to a large backlog, it must still happen invisibly — optimize the backend query rather than surfacing a loading state.
+
+WHERE: Session reconnect handler, apps/web/app/.
+
+DEPENDS ON: WEB-R1.4.
+
+COMMON MISTAKE: Adding a "syncing..." label "just for debugging" and forgetting to remove it before merge.
+
+VERIFY: Disconnect and reconnect the phone repeatedly; visually confirm no sync-related UI ever appears, and check the browser console has no user-facing sync messages.
+WEB-R1.6: Manual Log-Off Ends Session Properly
+WHAT: A manual log-off from Web fully terminates the session server-side and requires a fresh QR scan to log back in.
+
+REFERENCE: TAD session lifecycle spec.
+
+WHY THIS MATTERS: A log-off that only clears local browser state but leaves the backend session active is a security gap — someone could resume the "logged off" session.
+
+ALLOWED: Calling a backend session-termination endpoint on log-off.
+
+NOT ALLOWED: Clearing only localStorage/cookies without notifying the backend.
+
+EDGE CASE: User logs off while offline (no network) — queue the termination request and ensure it's sent the moment connectivity returns; don't let the local session silently remain valid indefinitely.
+
+WHERE: apps/web/app/, backend session endpoints.
+
+DEPENDS ON: WEB-R1.4.
+
+COMMON MISTAKE: Treating log-off as a purely client-side action.
+
+VERIFY: Log off, then attempt to resume using dev tools/old tokens — confirm the backend rejects it, and confirm a fresh QR scan is required.
+
+WEB-R1.7: Closing Tab Does Not End Session
+Description
+Edit
+WHAT: Closing the browser tab (not explicitly logging off) preserves the session — reopening the site resumes the same logged-in state.
+
+REFERENCE: Locked design decision.
+
+WHY THIS MATTERS: Users expect Web sessions to persist across tab closes, same as WhatsApp Web — this is basic expected behavior, not an edge case.
+
+ALLOWED: Persisting session state via secure storage (httpOnly cookie or equivalent) that survives tab closure.
+
+NOT ALLOWED: Storing session tokens in a way that's cleared on tab close (e.g. in-memory only).
+
+EDGE CASE: Browser's private/incognito mode may clear storage on close — document this as expected, not a bug to chase.
+
+WHERE: Session persistence logic, apps/web/app/.
+
+DEPENDS ON: WEB-R1.4.
+
+COMMON MISTAKE: Confusing this requirement with WEB-R1.6 and accidentally building one mechanism that breaks the other — closing a tab and manually logging off must behave differently.
+
+VERIFY: Link a session, close the tab, reopen the URL — confirm still logged in with no re-scan required.
+
+WEB-R1.8: New-Phone Login Force-Logs Web Off
+WHAT: If the account owner logs into the mobile app on a new/different phone, any active Web session is immediately terminated, with no warning shown to the Web session beforehand.
+
+REFERENCE: Locked design decision, matches mobile app's own new-device behavior.
+
+WHY THIS MATTERS: Security requirement — a new device login should invalidate old sessions immediately, not leave a window where both are simultaneously "trusted."
+
+ALLOWED: Backend-triggered session invalidation broadcast to Web.
+
+NOT ALLOWED: A grace period or "your session will end in X seconds" warning — it should be immediate.
+
+EDGE CASE: Web is actively in use (composing a message) when this happens — the message should not silently fail; show a clear "session ended, please rescan" state immediately.
+
+WHERE: Backend device/session management, apps/web/app/.
+
+DEPENDS ON: WEB-R1.6, mobile device-handoff logic (already exists in device-handoff.tsx).
+
+COMMON MISTAKE: Only invalidating the token without pushing a real-time signal to the active Web session — the user would see a broken app instead of a clean "logged out" state.
+
+VERIFY: Have Web session active, log into mobile on a second test device, confirm Web is immediately kicked to logged-out state.
+WEBR-1.9:Retire the Legacy Express/Socket.io Implementation
+WHAT: Once WEB-R1.1 through R1.8 are confirmed working, delete apps/web/qr-login/ entirely, including the vendored QR library, and confirm nothing else in the repo references it.
+
+REFERENCE: Sprint 1 audit finding — this folder is the original non-compliant implementation (Express/Socket.io, never had a PR opened).
+
+WHY THIS MATTERS: Leaving two implementations side by side is confusing and risks someone accidentally building on the wrong one, as already happened once.
+
+ALLOWED: Full deletion of the folder and its dependencies from any workspace config.
+
+NOT ALLOWED: "Commenting out" or partially disabling it — full removal only.
+
+EDGE CASE: Check package.json/pnpm-workspace.yaml at the root for any reference to the qr-login package and remove it too.
+
+WHERE: apps/web/qr-login/, root workspace config.
+
+DEPENDS ON: All of WEB-R1.1–R1.8 confirmed working first — do not delete before the replacement is proven.
+
+COMMON MISTAKE: Deleting this too early, before the new implementation is fully verified, leaving Web with nothing functional.
+
+VERIFY: Folder no longer exists in the repo, pnpm install at root completes with no missing-package errors, full QR-linking flow still works end to end.
+WEB-2.1: Chat List and Chat Window UI (Stretch)
+STRETCH GOAL — only start once all of WEB-R1.1–R1.9 (Phase 1) are fully merged and reviewed.
+
+WHAT: Build the chat list and individual chat window views, matching the accepted mobile design pixel-for-pixel where the design allows for it.
+
+REFERENCE: Phase 5 Web design (accepted, final).
+
+WHY THIS MATTERS: This is the core daily-use surface of the Web app.
+
+ALLOWED: Using the design system/components already established for mobile where applicable.
+
+NOT ALLOWED: Inventing new UI patterns not in the accepted design.
+
+EDGE CASE: Empty state (no chats yet) needs its own designed screen, not a blank page.
+
+WHERE: apps/web/app/ (new chat routes).
+
+DEPENDS ON: Full Phase 1 completion (WEB-R1.1–R1.9).
+
+COMMON MISTAKE: Building against a remembered version of the design instead of re-checking the actual accepted Phase 5 design files.
+
+VERIFY: Visual comparison against Phase 5 design files; empty and populated states both render correctly.
+WEB-2.2: Message Sending Parity - Text/Media/Voice (Stretch)
+STRETCH GOAL — only start once Phase 1 (WEB-R1.1–R1.9) is complete and WEB-2.1 exists.
+
+WHAT: Support sending text messages, media attachments, and voice notes from Web, at feature parity with mobile.
+
+REFERENCE: PRD messaging feature set; TAD messaging pipeline (once Backend BE-5.4 exists).
+
+WHY THIS MATTERS: Web without full send capability isn't a usable product.
+
+ALLOWED: Reusing shared message-composition logic from packages/shared where applicable.
+
+NOT ALLOWED: Web-only message types not supported on mobile.
+
+EDGE CASE: Large media files — enforce the same size limits as mobile, with a clear error if exceeded.
+
+WHERE: apps/web/app/, packages/api-client.
+
+DEPENDS ON: WEB-2.1, Backend Messaging Pipeline (BE-5.4 onward — may not exist yet this sprint).
+
+COMMON MISTAKE: Building this against a mocked backend and never testing against the real messaging pipeline once it exists.
+
+VERIFY: Send each message type from Web, confirm receipt on a mobile test device.
+WEB-2.3: Read Receipts, Typing Indicators, In-Chat Search (Stretch)
+STRETCH GOAL — only start once Phase 1 (WEB-R1.1–R1.9) and WEB-2.2 are complete.
+
+WHAT: Implement the four-state message status display, live typing indicators, and a search function within an open chat.
+
+REFERENCE: PRD four-state message status system; Phase 5 design.
+
+WHY THIS MATTERS: These are expected baseline features for a competitive messaging app.
+
+ALLOWED: Reusing the same status-state logic as mobile.
+
+NOT ALLOWED: A simplified 2-state status (sent/read only) — must match the full four-state spec.
+
+EDGE CASE: Typing indicator should clear itself after a timeout if the other party stops typing without sending.
+
+WHERE: apps/web/app/.
+
+DEPENDS ON: WEB-2.2, Backend four-state status (BE-5.5 — may not exist yet this sprint).
+
+COMMON MISTAKE: Implementing typing indicators as a naive "always on while focused" without a timeout, causing stuck indicators.
+
+VERIFY: Test each of the 4 status states transitions correctly; search returns correct results within a chat with 50+ messages.
