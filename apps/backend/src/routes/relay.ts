@@ -18,6 +18,14 @@ import { devices } from "../db/devices-schema.js";
 import { users } from "../db/users-schema.js";
 import { blocks } from "../db/blocks-schema.js";
 import { pendingMessages } from "../db/pending-messages-schema.js";
+import {
+  escalate,
+  getStatus,
+  pushStatusToSender,
+  recordSent,
+  resetFailedToSent,
+  toStatusEvent,
+} from "../db/message-status.js";
 import { phoneHash } from "../utils/phone-hash.js";
 import { pushToDevice } from "../ws/socket-registry.js";
 
@@ -51,8 +59,6 @@ async function resolvePhoneHashForUser(
     .limit(1);
   return row ? phoneHash(row.phoneNumber) : null;
 }
-
-
 
 /** True when a block exists between two hashes in EITHER direction. */
 async function hasBlockBetween(
@@ -130,7 +136,8 @@ function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
 //   recipientGroupId?: string,        //   -> rejected until BE-5.7
 // }
 //
-// Response: { success, duplicate, count, rows: [{ id, recipientDeviceId, pushed }] }
+// Response: { success, duplicate, count, rows: [{ id, recipientDeviceId, pushed }], status? }
+//   status (BE-5.5) = the message's four-state status; present when clientMessageId was sent.
 //   pushed = a live socket was addressed. false is normal (recipient offline):
 //   the row is durable and is delivered via /relay/poll.
 // ──────────────────────────────────────────────────
@@ -324,6 +331,23 @@ router.post("/send", async (req: Request, res: Response) => {
         );
 
     if (clientMessageId) {
+      // BE-5.5: the status row outlives the pending_messages rows (those are deleted on
+      // delivery), so it is the authority on "was this already sent?". Without it a retry
+      // after delivery would re-insert the message and the recipient would get it twice.
+      const prior = await getStatus(db, authDeviceId, clientMessageId);
+      if (prior) {
+        // PRD 8.2: retrying a failed message moves it back to sent.
+        const status = (await resetFailedToSent(db, authDeviceId, clientMessageId)) ?? prior;
+        const existing = await findExisting();
+        res.json({
+          success: true,
+          duplicate: true,
+          count: existing.length,
+          rows: existing.map((r) => ({ ...r, pushed: false })),
+          status: toStatusEvent(status),
+        });
+        return;
+      }
       const existing = await findExisting();
       if (existing.length === targets.length) {
         res.json({
@@ -338,28 +362,42 @@ router.post("/send", async (req: Request, res: Response) => {
 
     const expiresAt = new Date(Date.now() + MESSAGE_TTL_MS);
     let inserted;
+    let sentStatus;
     try {
-      inserted = await db
-        .insert(pendingMessages)
-        .values(
-          targets.map((t) => ({
-            senderDeviceId: authDeviceId,
-            recipientDeviceId: t.deviceId,
-            recipientUserId: t.userId,
-            recipientGroupId: null,
-            ciphertext: t.ciphertext,
-            messageType: msgType,
-            sizeBytes: t.ciphertext.length,
-            expiresAt,
-            clientMessageId: clientMessageId ?? null,
-          })),
-        )
-        .returning({
-          id: pendingMessages.id,
-          recipientDeviceId: pendingMessages.recipientDeviceId,
-          recipientUserId: pendingMessages.recipientUserId,
-          createdAt: pendingMessages.createdAt,
-        });
+      // One transaction: the queue rows and the `sent` status row exist together or not at all.
+      ({ inserted, sentStatus } = await db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(pendingMessages)
+          .values(
+            targets.map((t) => ({
+              senderDeviceId: authDeviceId,
+              recipientDeviceId: t.deviceId,
+              recipientUserId: t.userId,
+              recipientGroupId: null,
+              ciphertext: t.ciphertext,
+              messageType: msgType,
+              sizeBytes: t.ciphertext.length,
+              expiresAt,
+              clientMessageId: clientMessageId ?? null,
+            })),
+          )
+          .returning({
+            id: pendingMessages.id,
+            recipientDeviceId: pendingMessages.recipientDeviceId,
+            recipientUserId: pendingMessages.recipientUserId,
+            createdAt: pendingMessages.createdAt,
+          });
+        const status =
+          clientMessageId && targetUserId
+            ? await recordSent(tx, {
+                senderDeviceId: authDeviceId,
+                senderUserId: authUserId,
+                clientMessageId,
+                recipientUserId: targetUserId,
+              })
+            : null;
+        return { inserted: rows, sentStatus: status };
+      }));
     } catch (err) {
       // Two concurrent retries of the same clientMessageId: the unique index
       // (migration 018) rejects the loser; treat it as a duplicate.
@@ -367,11 +405,13 @@ router.post("/send", async (req: Request, res: Response) => {
         ?? (err as { cause?: { code?: string } }).cause?.code;
       if (clientMessageId && code === "23505") {
         const existing = await findExisting();
+        const prior = await getStatus(db, authDeviceId, clientMessageId);
         res.json({
           success: true,
           duplicate: true,
           count: existing.length,
           rows: existing.map((r) => ({ ...r, pushed: false })),
+          ...(prior ? { status: toStatusEvent(prior) } : {}),
         });
         return;
       }
@@ -395,7 +435,13 @@ router.post("/send", async (req: Request, res: Response) => {
       return { id: row.id, recipientDeviceId: row.recipientDeviceId, pushed };
     });
 
-    res.json({ success: true, duplicate: false, count: rows.length, rows });
+    res.json({
+      success: true,
+      duplicate: false,
+      count: rows.length,
+      rows,
+      ...(sentStatus ? { status: toStatusEvent(sentStatus) } : {}),
+    });
   } catch {
     console.error("POST /relay/send error");
     res.status(500).json({ error: "Internal server error" });
@@ -497,13 +543,35 @@ router.post("/ack", async (req: Request, res: Response) => {
       isAddressedToUser(authUserId),
     );
 
-    const [updated] = await db
-      .update(pendingMessages)
-      .set({ deliveredAt: new Date() })
-      .where(and(mine, isNull(pendingMessages.deliveredAt)))
-      .returning({ id: pendingMessages.id, deliveredAt: pendingMessages.deliveredAt });
+    // BE-5.5: mark the queue row delivered AND escalate the sender's status in one transaction,
+    // so a crash between the two can never leave the sender stuck on `sent` after the queue
+    // row has been purged.
+    const { updated, status } = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(pendingMessages)
+        .set({ deliveredAt: new Date() })
+        .where(and(mine, isNull(pendingMessages.deliveredAt)))
+        .returning({
+          id: pendingMessages.id,
+          deliveredAt: pendingMessages.deliveredAt,
+          senderDeviceId: pendingMessages.senderDeviceId,
+          clientMessageId: pendingMessages.clientMessageId,
+        });
+      const changed =
+        row && row.clientMessageId
+          ? await escalate(tx, {
+              senderDeviceId: row.senderDeviceId,
+              clientMessageId: row.clientMessageId,
+              to: "delivered",
+            })
+          : null;
+      return { updated: row, status: changed };
+    });
 
     if (updated) {
+      // After commit: tell the sender live. No-op if a sibling recipient device already
+      // escalated (status === null) or the sender is offline (they catch up via /status/sync).
+      if (status) pushStatusToSender(status);
       res.json({ success: true, messageId: updated.id, deliveredAt: updated.deliveredAt });
       return;
     }

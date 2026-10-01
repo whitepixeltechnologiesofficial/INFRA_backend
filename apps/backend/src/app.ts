@@ -11,6 +11,7 @@ import blocksRoutes from "./routes/blocks.js";
 import reportsRoutes from "./routes/reports.js";
 import moderationRoutes from "./routes/moderation.js";
 import relayRoutes from "./routes/relay.js";
+import messageStatusRoutes from "./routes/message-status.js";
 import prekeysRoutes from "./routes/prekeys.js";
 import linkingRoutes from "./routes/linking.js";
 import {
@@ -75,6 +76,8 @@ export function createApp(): BackendServer {
   app.use(`/api/${API_VERSION}/blocks`, blocksRoutes);
   app.use(`/api/${API_VERSION}/reports`, reportsRoutes);
   app.use(`/api/${API_VERSION}/moderation`, moderationRoutes);
+  // Mounted before /relay so the status paths are not first walked by the relay router.
+  app.use(`/api/${API_VERSION}/relay/status`, messageStatusRoutes);
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
   app.use(`/api/${API_VERSION}/prekeys`, prekeysRoutes);
   app.use(`/api/${API_VERSION}/linking`, linkingRoutes);
@@ -205,4 +208,4 @@ export function createApp(): BackendServer {
   });
 
   return { httpServer, io };
-}
+}
