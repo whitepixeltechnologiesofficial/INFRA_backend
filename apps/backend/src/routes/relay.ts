@@ -48,7 +48,7 @@ const MESSAGE_TYPES = new Set(["text", "image", "video", "audio", "file", "syste
 // ──────────────────────────────────────────────────
 
 /** Resolve the phone hash for a user id from the users table. */
-async function resolvePhoneHashForUser(
+export async function resolvePhoneHashForUser(
   userId: string,
   db: ReturnType<typeof getDb>,
 ): Promise<string | null> {
@@ -61,7 +61,7 @@ async function resolvePhoneHashForUser(
 }
 
 /** True when a block exists between two hashes in EITHER direction. */
-async function hasBlockBetween(
+export async function hasBlockBetween(
   hashA: string,
   hashB: string,
   db: ReturnType<typeof getDb>,
@@ -83,7 +83,7 @@ async function hasBlockBetween(
  * The set of phone hashes with which the given hash has a block in either
  * direction. poll uses this to filter out messages from blocked partners.
  */
-async function blockedPartnerHashes(
+export async function blockedPartnerHashes(
   selfHash: string,
   db: ReturnType<typeof getDb>,
 ): Promise<Set<string>> {
