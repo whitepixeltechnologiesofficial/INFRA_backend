@@ -1,7 +1,40 @@
 {
+<<<<<<< HEAD
   "name":"sealine-chat",
   "version":"1.0.0",
   "private":true,
   "scripts":{"start":"node server.js","dev":"node server.js"},
   "dependencies":{"express":"^4.21.2","socket.io":"^4.8.1"}
+=======
+  "name": "@wpt/web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start",
+    "lint": "node scripts/source-lint.js",
+    "typecheck": "tsc --noEmit",
+    "web:server": "node server/wpt-server.mjs",
+    "verify": "node scripts/web-link-verify.js && node scripts/web-dev-login-verify.js && node scripts/web-web14-verify.js && node scripts/web-web14-live.js && node scripts/web-web15-verify.js && node scripts/web-web16-verify.js && node scripts/web-web17-verify.js && node scripts/web-e2e.js && node scripts/web-21-verify.js && node scripts/web-22-verify.js && node scripts/web-23-verify.js && node scripts/web-24-verify.js && node scripts/web-25-verify.js && node scripts/web-fixtures-verify.js"
+  },
+  "dependencies": {
+    "@wpt/api-client": "workspace:*",
+    "@wpt/crypto": "workspace:*",
+    "@wpt/shared": "workspace:*",
+    "ionicons": "^8.1.0",
+    "next": "^15.5.24",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+>>>>>>> 4fd3746 ( web QR linking and chat fixtures)
 }
