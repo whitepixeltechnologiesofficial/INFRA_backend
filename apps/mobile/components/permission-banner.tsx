@@ -25,17 +25,17 @@ const PERMISSION_COPY: Record<PermissionId, { title: string; desc: string; icon:
   },
   microphone: {
     title: 'Microphone access denied',
-    desc: 'You can\'t record voice notes. Allow microphone access in settings.',
+    desc: 'You can\'t record voice notes until you allow it. Text messages work as normal.',
     icon: 'mic-outline',
   },
   camera: {
     title: 'Camera access denied',
-    desc: 'You can\'t take photos. Allow camera access in settings.',
+    desc: 'You can\'t take photos in a chat until you allow it. You can still attach photos from your gallery.',
     icon: 'camera-outline',
   },
   'photos-files': {
-    title: 'Photos access denied',
-    desc: 'You can\'t attach images from your gallery. Allow access in settings.',
+    title: 'Photos & Files access denied',
+    desc: 'You can\'t attach photos, videos or files until you allow it. You can still take a photo with the camera.',
     icon: 'images-outline',
   },
 };

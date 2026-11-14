@@ -25,6 +25,7 @@ import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { useThemeContext } from '@/providers/ThemeProvider';
 import { useSessionContext } from '@/providers/SessionProvider';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { requestPermission } from '@/lib/permissions';
 import { decideRecordAction, formatVoiceDuration, micGateFrom } from '@/lib/voice-note';
 import { decideAttachAction } from '@/lib/attach-gate';
@@ -49,10 +50,13 @@ interface Message {
   time: string;
   dateKey: string;
   status?: 'sent' | 'delivered' | 'read';
-  kind?: 'text' | 'voice' | 'image';
+  kind?: 'text' | 'voice' | 'image' | 'video' | 'file';
   audioUri?: string;
   durationSec?: number;
   imageUri?: string;
+  videoUri?: string;
+  fileUri?: string;
+  fileName?: string;
 }
 
 interface Contact {
@@ -91,6 +95,8 @@ function contactFromMatch(user: MatchedUser, phone = ''): Contact {
 function messagePreview(m: Message): string {
   if (m.kind === 'voice') return `Voice note (${formatVoiceDuration(m.durationSec ?? 0)})`;
   if (m.kind === 'image') return 'Photo';
+  if (m.kind === 'video') return 'Video';
+  if (m.kind === 'file') return m.fileName ? `File: ${m.fileName}` : 'File';
   return m.text;
 }
 
@@ -467,6 +473,17 @@ function MessageBubble({
       >
         {item.kind === 'image' && item.imageUri ? (
           <Image source={{ uri: item.imageUri }} style={s.imageMessage} accessibilityLabel="Photo" />
+        ) : item.kind === 'video' || item.kind === 'file' ? (
+          <View style={s.voiceRow} accessibilityLabel={item.kind === 'video' ? 'Video' : `File ${item.fileName ?? ''}`}>
+            <Ionicons
+              name={item.kind === 'video' ? 'videocam' : 'document-text'}
+              size={20}
+              color={item.sent ? '#0B0F14' : colors.accent}
+            />
+            <Text style={[s.messageText, { color: item.sent ? '#0B0F14' : colors.text, flexShrink: 1 }]} numberOfLines={1}>
+              {item.kind === 'video' ? `Video ${formatVoiceDuration(item.durationSec ?? 0)}` : item.fileName ?? 'File'}
+            </Text>
+          </View>
         ) : item.kind === 'voice' ? (
           <View style={s.voiceRow} accessibilityLabel={`Voice note, ${formatVoiceDuration(item.durationSec ?? 0)}`}>
             <Ionicons name="mic" size={18} color={item.sent ? '#0B0F14' : colors.accent} />
@@ -640,26 +657,45 @@ function ChatView({
     if (!res.canceled && res.assets[0]?.uri) appendOutgoing({ text: '', kind: 'image', imageUri: res.assets[0].uri });
   };
 
-  const openGallery = async () => {
+  // PERM-2.11/2.12: every "attach existing media" path (photos, videos,
+  // documents) goes through the Photos/Files gate ONLY. Camera state is never
+  // read here, so a denied Camera can not block it, and vice versa.
+  const ensurePhotosAccess = async (): Promise<boolean> => {
     let state = photosState;
     if (decideAttachAction(state) === 'ask') state = await requestPermission('photos');
     await refreshPhotos();
     if (decideAttachAction(state) !== 'open') {
       openSettingsAlert(
-        'Photos access is off',
-        'To attach photos you already have, allow photo access in Settings. You can still take a photo with the camera.',
+        'Photos & Files access is off',
+        'To attach photos, videos or files you already have, allow access in Settings. You can still take a photo with the camera.',
       );
-      return;
+      return false;
     }
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
-    if (!res.canceled && res.assets[0]?.uri) appendOutgoing({ text: '', kind: 'image', imageUri: res.assets[0].uri });
+    return true;
+  };
+
+  const openGallery = async () => {
+    if (!(await ensurePhotosAccess())) return;
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.7 });
+    const asset = !res.canceled ? res.assets[0] : undefined;
+    if (!asset?.uri) return;
+    if (asset.type === 'video') appendOutgoing({ text: '', kind: 'video', videoUri: asset.uri, durationSec: (asset.duration ?? 0) / 1000 });
+    else appendOutgoing({ text: '', kind: 'image', imageUri: asset.uri });
+  };
+
+  const openFiles = async () => {
+    if (!(await ensurePhotosAccess())) return;
+    const res = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true, multiple: false });
+    const doc = !res.canceled ? res.assets[0] : undefined;
+    if (doc?.uri) appendOutgoing({ text: '', kind: 'file', fileUri: doc.uri, fileName: doc.name });
   };
 
   // Both options are always offered: each one only ever checks its own permission.
   const openAttachMenu = () => {
     Alert.alert('Attach', undefined, [
       { text: 'Take photo', onPress: () => void openCamera() },
-      { text: 'Choose from gallery', onPress: () => void openGallery() },
+      { text: 'Photo or video from gallery', onPress: () => void openGallery() },
+      { text: 'Document', onPress: () => void openFiles() },
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
@@ -797,6 +833,9 @@ function ChatView({
           </TouchableOpacity>
         )}
 
+        {micState === 'denied' ? <PermissionBanner permissionId="microphone" /> : null}
+        {cameraState === 'denied' ? <PermissionBanner permissionId="camera" /> : null}
+        {photosState === 'denied' ? <PermissionBanner permissionId="photos-files" /> : null}
         {composerError ? (
           <Text style={[s.composerError, { color: colors.textDim, backgroundColor: colors.bg2 }]}>{composerError}</Text>
         ) : null}

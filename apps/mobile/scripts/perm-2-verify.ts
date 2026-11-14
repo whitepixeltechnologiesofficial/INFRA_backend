@@ -35,6 +35,8 @@ import { canRecordVoiceNotes, decideRecordAction, formatVoiceDuration, isUsableV
 import { attachOptions, decideAttachAction } from '../lib/attach-gate';
 import { dismissBanner, isBannerDismissed, resetBannerDismissals } from '../lib/banner-dismissal';
 import { takeNewIncoming, unreadStore } from '../lib/unread';
+import { createPermissionMonitor, isRegrant } from '../lib/permission-monitor';
+import type { PermissionState } from '../lib/permissions';
 
 const HERE = typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url));
 const MOBILE = join(HERE, '..');
@@ -400,24 +402,102 @@ async function main() {
   check('press-and-hold gesture (onPressIn / onPressOut)', /onPressIn=\{onPressIn\}/.test(recorder) && /onPressOut=\{onPressOut\}/.test(recorder));
   check('denied -> Settings-redirect dialog', /action === 'denied'\) \{\s*openSettingsAlert\(\s*'Microphone access is off'/.test(tabs) && /Linking\.openSettings\(\)/.test(tabs));
   check('releasing before the recorder starts captures nothing', /if \(!holding\.current\) return;\s*recorder\.record\(\)/.test(recorder));
-  check('mic gate is re-read on foreground (Settings round-trip)', /usePermissionState\('microphone'\)/.test(tabs) && /addEventListener\('change'[\s\S]*if \(s === 'active'\) refresh\(\)/.test(src('hooks/use-permission-state.ts')));
+  check('mic gate is re-read on foreground (Settings round-trip)', /usePermissionState\('microphone'\)/.test(tabs) && /AppState\.addEventListener\('change'[\s\S]*if \(state === 'active'\) void permissionMonitor\.refresh\(\)/.test(src('lib/permission-status.ts')));
 
   // ───────────────────────────── PERM-2.9 – 2.12 ─────────────────────────────
   section('PERM-2.9 – 2.12  Camera and Photos/Files are independent');
   check('both attach options are always offered', attachOptions().join() === 'camera,photos');
   check('granted -> open, undetermined -> ask, denied -> settings', decideAttachAction('granted') === 'open' && decideAttachAction('unknown') === 'ask' && decideAttachAction(null) === 'ask' && decideAttachAction('denied') === 'settings' && decideAttachAction('unavailable') === 'settings');
   check('camera denied + photos granted: camera -> settings, gallery -> open', decideAttachAction('denied') === 'settings' && decideAttachAction('granted') === 'open');
-  const camFn = tabs.slice(tabs.indexOf('const openCamera'), tabs.indexOf('const openGallery'));
-  const galFn = tabs.slice(tabs.indexOf('const openGallery'), tabs.indexOf('const openAttachMenu'));
+  const camFn = tabs.slice(tabs.indexOf('const openCamera'), tabs.indexOf('const ensurePhotosAccess'));
+  const galFn = tabs.slice(tabs.indexOf('const ensurePhotosAccess'), tabs.indexOf('const openAttachMenu'));
   check('camera path reads ONLY the camera permission', /cameraState/.test(camFn) && !/photosState|'photos'/.test(camFn));
   check('gallery path reads ONLY the photos permission', /photosState/.test(galFn) && !/cameraState|'camera'/.test(galFn));
   check('camera is never launched before a grant', /if \(decideAttachAction\(state\) !== 'open'\) \{[\s\S]*?return;\s*\}\s*const res = await ImagePicker\.launchCameraAsync/.test(camFn));
   check('camera denied -> Settings-redirect dialog', /'Camera access is off'/.test(camFn));
-  check('gallery denied -> Settings-redirect dialog', /'Photos access is off'/.test(galFn));
-  check('the attach menu offers both, unconditionally', /'Take photo'[\s\S]*'Choose from gallery'/.test(tabs) && !/disabled=\{[^}]*camera/i.test(tabs));
+  check('gallery denied -> Settings-redirect dialog', /'Photos & Files access is off'/.test(galFn));
+  check('the attach menu offers camera AND existing media, unconditionally', /'Take photo'[\s\S]*'Photo or video from gallery'[\s\S]*'Document'/.test(tabs) && !/disabled=\{[^}]*camera/i.test(tabs));
+
+
+  section('PERM-2.11 / 2.12  Photos/Files: photos, videos and documents; camera unaffected');
+  check('Photos/Files is the 5th and LAST dialog', PERMISSION_ORDER[4] === 'photos' && PERMISSION_ORDER.length === 5);
+  check('gallery attaches photos AND videos', /mediaTypes: \['images', 'videos'\]/.test(galFn) && /kind: 'video'/.test(galFn));
+  check('documents can be attached', /DocumentPicker\.getDocumentAsync/.test(galFn) && /kind: 'file'/.test(galFn));
+  check('gallery and documents both pass the Photos/Files gate first', /const openGallery = async \(\) => \{\s*if \(!\(await ensurePhotosAccess\(\)\)\) return;/.test(galFn) && /const openFiles = async \(\) => \{\s*if \(!\(await ensurePhotosAccess\(\)\)\) return;/.test(galFn));
+  check('no picker opens before the gate says open', /if \(decideAttachAction\(state\) !== 'open'\) \{[\s\S]*?return false;/.test(galFn));
+  check('Photos/Files denied never reads or blocks Camera', !/cameraState|requestPermission\('camera'\)|launchCameraAsync/.test(galFn));
+  check('expo-document-picker is an SDK 54 dependency', /"expo-document-picker": "~14\.0\.\d+"/.test(readFileSync(join(MOBILE, 'package.json'), 'utf8')));
+  check('video and file messages render (no blank bubble)', /item\.kind === 'video' \|\| item\.kind === 'file'/.test(tabs) && /m\.kind === 'video'\) return 'Video'/.test(tabs));
 
   // ───────────────────────────── PERM-2.13 / 2.14 ─────────────────────────────
   section('PERM-2.13 / 2.14  Re-grant detection, session-scoped banner dismissal');
+  {
+    const os: Record<PermissionKey, PermissionState> = { contacts: 'denied', notifications: 'denied', microphone: 'denied', camera: 'denied', photos: 'denied' };
+    const checked: string[] = [];
+    const transitions: string[] = [];
+    let notified = 0;
+    const mon = createPermissionMonitor({
+      check: async (k) => (checked.push(k), os[k]),
+      onTransition: (k, from, to) => transitions.push(`${k}:${from}->${to}`),
+    });
+    mon.subscribe(() => (notified += 1));
+    await mon.refresh();
+    check('first check reads ALL five permissions', checked.length === 5 && PERMISSION_ORDER.every((k) => mon.get(k) === 'denied'));
+    for (const k of PERMISSION_ORDER) {
+      transitions.length = 0;
+      os[k] = 'granted';
+      await mon.refresh();
+      check(`${k}: granted in Settings -> detected on the next resume`, mon.get(k) === 'granted' && transitions.join() === `${k}:denied->granted`, transitions);
+    }
+    const before = notified;
+    transitions.length = 0;
+    await mon.refresh();
+    await mon.refresh();
+    check('a resume with nothing changed fires no transition and no re-render', transitions.length === 0 && notified === before);
+    os.camera = 'denied';
+    await mon.refresh();
+    check('a revoke in Settings is detected too', mon.get('camera') === 'denied');
+    check('re-grant = denied/unavailable -> granted (first grant in the sequence is not)', isRegrant('denied', 'granted') && isRegrant('unavailable', 'granted') && !isRegrant('unknown', 'granted') && !isRegrant(undefined, 'granted'));
+    let boom = 0;
+    const failing = createPermissionMonitor({
+      check: async (k) => {
+        if (k === 'microphone') throw new Error('x');
+        return 'granted';
+      },
+      onTransition: () => {
+        boom += 1;
+        throw new Error('side effect');
+      },
+    });
+    await failing.refresh();
+    check('a failing check or side effect never breaks reconciliation', failing.get('microphone') === 'unavailable' && failing.get('photos') === 'granted' && boom === 5);
+    let calls = 0;
+    const slow = createPermissionMonitor({
+      check: async () => {
+        calls += 1;
+        await tick();
+        return 'denied';
+      },
+    });
+    await Promise.all([slow.refresh(), slow.refresh(), slow.refresh()]);
+    check('overlapping resume events share one check pass', calls === 5);
+
+    resetBannerDismissals();
+    dismissBanner('microphone');
+    const banners = createPermissionMonitor({ check: async () => 'denied' });
+    for (let i = 0; i < 5; i += 1) await banners.refresh();
+    check('PERM-2.14: repeated resume checks (permission unchanged) never resurrect a dismissed banner', isBannerDismissed('microphone'));
+    check('PERM-2.14: other banners are unaffected by that dismissal', !isBannerDismissed('camera'));
+    resetBannerDismissals();
+  }
+  const status = src('lib/permission-status.ts');
+  check('reconciliation runs on EVERY foreground, not just cold launch', /AppState\.addEventListener\('change'[\s\S]*state === 'active'\) void permissionMonitor\.refresh\(\)/.test(status));
+  check('the monitor is started at app boot', /startPermissionMonitor\(\);/.test(src('app/_layout.tsx')));
+  check('re-granted Contacts starts the sync; re-granted Notifications registers push', /key === 'contacts'\) void syncContactsFromDevice\(\)/.test(status) && /key === 'notifications'\) void registerPushToken\(\)/.test(status));
+  check('every screen reads permissions from the one monitor', /useSyncExternalStore\(permissionMonitor\.subscribe/.test(src('hooks/use-permission-state.ts')));
+  check('no restart / "check again" button anywhere', !/check again|Refresh permissions|restart the app/i.test(tabs + src('components/permission-banner.tsx')));
+  check('banners hide as soon as the live state is no longer denied', /micState === 'denied' \? <PermissionBanner permissionId="microphone"/.test(tabs) && /cameraState === 'denied' \? <PermissionBanner permissionId="camera"/.test(tabs) && /photosState === 'denied' \? <PermissionBanner permissionId="photos-files"/.test(tabs));
+  check('PERM-2.14: dismissal and permission state are separate modules that never touch each other', !/banner-dismissal|dismiss/.test(src('lib/permission-monitor.ts') + status) && !/permission-monitor|permission-status|permissions'/.test(src('lib/banner-dismissal.ts')));
   check('Contacts granted in Settings -> sync starts in place', /contactsState === 'granted' && \(sync\.status === 'idle' \|\| sync\.status === 'not_granted'\)/.test(tabs));
   resetBannerDismissals();
   check('banner visible before dismissal', !isBannerDismissed('contacts'));
@@ -438,6 +518,15 @@ async function main() {
     });
     await seq.arm();
     const r = await seq.run();
+    const copy = readFileSync(join(MOBILE, 'components/permission-banner.tsx'), 'utf8');
+    check('all five denial banners exist and are wired to a live denied state',
+      /!granted \? <PermissionBanner permissionId="contacts"/.test(tabs) &&
+      /notificationsState === 'denied' \? <PermissionBanner permissionId="notifications"/.test(tabs) &&
+      /permissionId="microphone"/.test(tabs) && /permissionId="camera"/.test(tabs) && /permissionId="photos-files"/.test(tabs));
+    check('each banner says what is off AND what still works',
+      /start a chat by number/.test(copy) && /Unread messages still show/.test(copy) && /Text messages work as normal/.test(copy) &&
+      /still attach photos from your gallery/.test(copy) && /still take a photo with the camera/.test(copy));
+    check('banners do no async work while rendering (can not crash their screen)', !/await|fetch\(|useEffect/.test(src('components/permission-banner.tsx')));
     check('all five denied still completes and unlocks the Chat List', r.stage === 'done' && PERMISSION_ORDER.every((k) => r.results[k] === 'denied'));
     const salt = 's';
     const chat = await lookupManualNumber('+14155552671', {

@@ -1411,5 +1411,16 @@ the PRD cards (the report's PERM-2.1 decision was resolved in favour of the PRD)
   `pnpm --filter @wpt/backend run verify:perm2` **22/22** over HTTP, push_tokens migration on
   PGlite 4/4, mobile `tsc` + `expo lint` clean, backend `tsc` clean + eslint clean on touched files
   (backend `pnpm lint` bin shim is broken: run `node ../../node_modules/eslint/bin/eslint.js`).
+- Follow-up (PERM-2.11–2.15 report pass): attach menu = Take photo / Photo or video from gallery /
+  Document (`expo-document-picker` ~14.0.8); gallery + documents go through `ensurePhotosAccess()`
+  only. NEW `lib/permission-monitor.ts` (pure) + `lib/permission-status.ts`: ONE app-wide monitor,
+  started at boot, re-checks all five on EVERY foreground, diffs against last-known state; re-grant
+  (denied/unavailable -> granted) of Contacts starts sync, of Notifications registers push.
+  `usePermissionState` reads the monitor. All five denial banners: contacts (New Chat),
+  notifications (Chat List), microphone/camera/photos-files (chat thread); dismissal store and
+  monitor never import each other. Harness now **144/144**.
+- PERM-2.15 steps 3–4 BLOCKED: the mobile chat on WEB_QR is still a local simulation (relayClient /
+  socket never used to send or receive; no mobile E2E engine). A real two-account message needs the
+  messaging/encryption work, not permission code.
 - NOT done: migration 019 not run on Supabase; no device test (real push needs an EAS
   `projectId` + FCM/APNs creds in a dev build — Expo Go cannot receive remote push); not merged.

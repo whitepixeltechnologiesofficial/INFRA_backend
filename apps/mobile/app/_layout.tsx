@@ -7,8 +7,10 @@ import { Lato_400Regular, Lato_400Regular_Italic, Lato_700Bold, Lato_900Black } 
 import { ThemeProvider, useThemeContext } from '@/providers/ThemeProvider';
 import { SessionProvider } from '@/providers/SessionProvider';
 import { configureNotifications } from '@/lib/push';
+import { startPermissionMonitor } from '@/lib/permission-status';
 
 void configureNotifications();
+startPermissionMonitor();
 
 function RootLayoutInner() {
   const { colorScheme, colors } = useThemeContext();
