@@ -346,6 +346,18 @@ async function main() {
     await sleep(300);
     check("nothing re-pushed to Carol", carolConn.messages.length === carolBefore);
 
+    // Two retries of a NEW clientMessageId fired at once: the unique indexes reject the loser, which
+    // must be answered as a duplicate (200) rather than an error, and nothing may be queued twice.
+    const msgRace = randomUUID();
+    const race = await Promise.all([
+      sendGroup(a!.token, g1, msgRace, "race"),
+      sendGroup(a!.token, g1, msgRace, "race"),
+      sendGroup(a!.token, g1, msgRace, "race"),
+    ]);
+    check("concurrent retries all answer 200", race.every((r) => r.status === 200), race.map((r) => r.status));
+    check("exactly one of them did the send, the rest are duplicates", race.filter((r) => r.json?.duplicate === false).length === 1, race.map((r) => r.json?.duplicate));
+    check("queued exactly once: 4 rows, 3 status rows", (await queuedRows(msgRace)).length === 4 && (await statusMap(msgRace)).size === 3);
+
     console.log("\n[6] Blocking does not apply inside a shared group (PRD 19.8)");
     const ph = (p: string) => phoneHash(p);
     await pool.query(`INSERT INTO blocks (blocker_phone_hash, blocked_phone_hash) VALUES ($1, $2)`, [ph(dave.phone), ph(alice.phone)]);
