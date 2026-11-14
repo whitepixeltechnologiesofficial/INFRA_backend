@@ -1,18 +1,7 @@
-<<<<<<< HEAD
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // packages/* are consumed as TS source directly (see tsconfig "paths"
   // via workspace symlinks) — no transpilePackages needed as long as
-  // @wpt/shared, @wpt/api-client, @wpt/crypto stay TS-source-only.
-  transpilePackages: ["@wpt/shared", "@wpt/api-client", "@wpt/crypto"],
-};
-
-export default nextConfig;
-=======
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  // packages/* are consumed as TS source directly (see tsconfig "paths"
-  // via workspace symlinks) �?" no transpilePackages needed as long as
   // @wpt/shared, @wpt/api-client, @wpt/crypto stay TS-source-only.
   transpilePackages: ["@wpt/shared", "@wpt/api-client", "@wpt/crypto"],
   // The dev server is bound to 0.0.0.0 (see the `dev` script) so a phone on the
@@ -40,4 +29,3 @@ const nextConfig = {
 };
 
 export default nextConfig;
->>>>>>> 4fd3746 ( web QR linking and chat fixtures)

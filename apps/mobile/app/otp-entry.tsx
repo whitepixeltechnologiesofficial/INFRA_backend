@@ -1,4 +1,4 @@
-﻿// app/otp-entry.tsx
+// app/otp-entry.tsx
 import { onboardingApi } from '@/api/onboardingApi';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { Ionicons } from '@expo/vector-icons';
@@ -239,12 +239,7 @@ export default function OtpEntryScreen() {
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
-      <View
-        colors={[C.bg2, C.bg]}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 0.45 }}
-        style={styles.root}
-      >
+      <View style={styles.root}>
         <View style={styles.top}>
           <Pressable
             onPress={() => router.back()}

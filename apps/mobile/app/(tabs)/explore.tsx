@@ -1,15 +1,13 @@
 // app/(tabs)/explore.tsx
 import { Image } from 'expo-image';
-import { Platform, StyleSheet, ScrollView, View, TouchableOpacity } from 'react-native';
+import { type Href } from 'expo-router';
+import { Platform, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '@react-navigation/native';
 
 import { ExternalLink } from '@/components/external-link';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Collapsible } from '@/components/ui/collapsible';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -26,7 +24,17 @@ const C = {
   cardBg: '#1a1a1e',
 };
 
-const features = [
+type Feature = {
+  id: number;
+  icon: string;
+  title: string;
+  description: string;
+  link?: Href & string;
+  hasImage?: boolean;
+  platformSpecific?: boolean;
+};
+
+const features: Feature[] = [
   {
     id: 1,
     icon: '📱',
@@ -68,16 +76,6 @@ const features = [
 export default function TabTwoScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  
-  // Dynamic colors based on theme
-  const colors = {
-    headerBg: isDark ? C.bg2 : '#f5f5f5',
-    cardBg: isDark ? C.cardBg : '#ffffff',
-    borderColor: isDark ? C.borderSoft : '#e0e0e0',
-    textColor: isDark ? C.text : '#1a1a1a',
-    textDim: isDark ? C.inkDim : '#666666',
-    iconColor: isDark ? C.ink : '#333333',
-  };
 
   return (
     <LinearGradient

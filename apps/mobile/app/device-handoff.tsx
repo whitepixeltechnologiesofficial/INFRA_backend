@@ -3,7 +3,7 @@
 // Per PRD Scenarios 5.1–5.4: Successful verification on new device force-logs-out
 // old phone + Web silently. Confirmation shown only on new device.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -23,11 +23,16 @@ export default function DeviceHandoffScreen() {
   const userId = params.userId || '';
   const [isLoading, setIsLoading] = useState(true);
   const { createSession } = useSession();
+  const createSessionRef = useRef(createSession);
+
+  useEffect(() => {
+    createSessionRef.current = createSession;
+  }, [createSession]);
 
   useEffect(() => {
     const performHandoff = async () => {
       try {
-        await createSession(userId);
+        await createSessionRef.current(userId);
         // Store the formatted phone number for display in Settings/Chats
         if (phoneNumber) {
           const parsed = parsePhoneNumberFromString(phoneNumber);
@@ -35,7 +40,7 @@ export default function DeviceHandoffScreen() {
           await SecureStore.setItemAsync('displayPhone', formatted);
         }
         setIsLoading(false);
-      } catch (error) {
+      } catch {
         setIsLoading(false);
       }
     };

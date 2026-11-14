@@ -4,6 +4,8 @@
 // it needs real auth (e.g. middleware.ts checking an admin role/claim on
 // every /admin/* request), otherwise it's just an obscure URL.
 
-export default function AdminDashboardPage() {
+import type { JSX } from "react";
+
+export default function AdminDashboardPage(): JSX.Element {
   return <main>@wpt/web — admin (unlinked, auth TODO)</main>;
 }

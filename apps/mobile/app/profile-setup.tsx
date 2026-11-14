@@ -1,4 +1,4 @@
-﻿// app/profile-setup.tsx
+// app/profile-setup.tsx
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useState } from 'react';
 import {
@@ -118,7 +118,7 @@ export default function ProfileSetupScreen() {
         photo: photo || undefined,
         about: about.trim() || DEFAULT_ABOUT,
       });
-      router.replace('/(tabs)');
+      router.replace('/permission-info');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to set up profile.');
     } finally {

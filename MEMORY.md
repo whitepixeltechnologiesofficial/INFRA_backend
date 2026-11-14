@@ -1,0 +1,1 @@
+- [Contextual Permissions Flow](permissions-flow.md) — project decisions

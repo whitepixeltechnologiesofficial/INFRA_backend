@@ -13,6 +13,7 @@ import moderationRoutes from "./routes/moderation.js";
 import relayRoutes from "./routes/relay.js";
 import prekeysRoutes from "./routes/prekeys.js";
 import linkingRoutes from "./routes/linking.js";
+import contactsRoutes from "./routes/contacts.js";
 import {
   initSocketRegistry,
   registerSocket,
@@ -78,6 +79,7 @@ export function createApp(): BackendServer {
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
   app.use(`/api/${API_VERSION}/prekeys`, prekeysRoutes);
   app.use(`/api/${API_VERSION}/linking`, linkingRoutes);
+  app.use(`/api/${API_VERSION}/contacts`, contactsRoutes);
 
   const httpServer = createServer(app);
 

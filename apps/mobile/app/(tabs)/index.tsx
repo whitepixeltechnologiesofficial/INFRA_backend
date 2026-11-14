@@ -17,6 +17,7 @@ import {
   Linking,
   RefreshControl,
   Animated as RNAnimated,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -24,7 +25,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { useThemeContext } from '@/providers/ThemeProvider';
 import { useSessionContext } from '@/providers/SessionProvider';
-import * as Contacts from 'expo-contacts';
+import { checkMicrophoneState, requestMicrophonePermission } from '@/lib/permissions';
+import { MicGate, classifyMicGranted, decideRecordAction } from '@/lib/voice-note';
+import { PermissionBanner } from '@/components/permission-banner';
 import type { ThemeColors } from '@/lib/theme';
 
 const FONTS = {

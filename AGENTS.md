@@ -7,7 +7,7 @@ session to get context and pick up where work left off.
 
 Turborepo monorepo managed with **pnpm** (`pnpm@10`), Node >= 20.
 
-- `apps/mobile` — **sealine-mobile**: Expo (SDK 54) + React Native 0.81 + expo-router (~6.0).
+- `apps/mobile` — **@wpt/mobile**: Expo (SDK 54) + React Native 0.81 + expo-router (~6.0).
   This is the primary active workspace (feature: `mobile-onboarding`).
 - `apps/web` — Next.js 15 (`@wpt/web`).
 - `apps/backend` — Express + drizzle-orm + postgres + socket.io (`@wpt/backend`, ESM).
@@ -388,7 +388,7 @@ regression harness:
   (T5), LAN/localhost browser provenance vs public-host block (T6), zero auth-state
   mutation from any QR decision (T7), legitimate manual login preserved (T8), and
   the full trusted-origin allowlist matrix (B).
-- Result: `pnpm --filter sealine-mobile exec tsc --noEmit` → **0 errors** (was 3).
+- Result: `pnpm --filter @wpt/mobile exec tsc --noEmit` → **0 errors** (was 3).
   `expo lint` clean. All harnesses PASS: `permission-tasks-verify` 36/36,
   `onb-17-verify` 36/36, `onb-17-backend-mode` 13/13, `perm-tasks-1-15-verify` 198/198,
   `qr-scan-verify` 95/95. Repo-level `pnpm lint` / `pnpm typecheck` → exit 0.

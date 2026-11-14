@@ -204,12 +204,7 @@ export default function PhoneEntryScreen() {
   };
 
   return (
-    <View
-      colors={[C.bg2, C.bg]}
-      start={{ x: 0.5, y: 0 }}
-      end={{ x: 0.5, y: 0.45 }}
-      style={styles.root}
-    >
+    <View style={styles.root}>
       <View style={styles.top}>
         <Pressable
           onPress={() => router.back()}
