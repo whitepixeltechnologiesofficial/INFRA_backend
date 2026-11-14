@@ -192,11 +192,28 @@ export async function handleGroupSend(args: {
       return { inserted: rows, statusRows: status };
     }));
   } catch (err) {
-    // Two concurrent retries of the same clientMessageId: the unique indexes reject the loser.
-    const code =
-      (err as { code?: string }).code ?? (err as { cause?: { code?: string } }).cause?.code;
+    const e = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
+    const code = e.code ?? e.cause?.code;
     if (code === "23505") {
-      await duplicateResponse();
+      // Two concurrent retries of the same clientMessageId: the unique indexes reject the loser
+      // only AFTER the winner has committed, so its status rows are visible here. Only then is
+      // this a genuine duplicate.
+      const committed = await getStatuses(db, authDeviceId, clientMessageId);
+      if (committed.length > 0) {
+        await duplicateResponse();
+        return;
+      }
+      // A unique violation with NO committed prior send is not a retry. It means the schema is
+      // behind the code: migration 020 has not been applied, so message_status is still unique on
+      // (sender_device_id, client_message_id) and cannot hold one row per recipient. Reporting
+      // `duplicate: true` here would tell the sender the message was sent when nothing was queued,
+      // so fail loudly instead and name the constraint for whoever reads the server log.
+      console.error(
+        `POST /relay/send group fan-out: unique violation with no prior send (constraint ${
+          e.constraint ?? e.cause?.constraint ?? "unknown"
+        }). Is migration 020_group_fanout.sql applied?`,
+      );
+      res.status(503).json({ error: "GROUP_FANOUT_UNAVAILABLE" });
       return;
     }
     throw err;
