@@ -44,7 +44,33 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow WPT to access your camera to scan QR codes."
+          "cameraPermission": "Allow WPT to use your camera to scan QR codes and take photos in chats."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow WPT to find friends already on the app. Numbers are hashed on your phone and never uploaded."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#3FC6B8",
+          "defaultChannel": "messages"
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow WPT to use your microphone to record voice notes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow WPT to attach photos you already have.",
+          "cameraPermission": "Allow WPT to use your camera to take photos in chats."
         }
       ]
     ],

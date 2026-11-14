@@ -1,47 +1,44 @@
-import * as SecureStore from 'expo-secure-store';
+// lib/banner-dismissal.ts
+//
+// PERM-2.14 — banner dismissal is SESSION-scoped: once dismissed, a denial
+// banner stays hidden for the rest of this app session, and comes back after
+// an app restart. Deliberately module memory only — nothing is persisted.
 
-const KEY_PREFIX = 'onb.banner_dismissed.';
-const memoryCache = new Set<string>();
-let isInitialized = false;
+import { useSyncExternalStore } from 'react';
 
-export async function initBannerDismissals(): Promise<void> {
-  if (isInitialized) return;
-  // Initialize from SecureStore
-  const permissionIds = ['contacts', 'notifications', 'microphone', 'camera', 'photos-files'];
-  for (const id of permissionIds) {
-    try {
-      const val = await SecureStore.getItemAsync(`${KEY_PREFIX}${id}`);
-      if (val === 'true') {
-        memoryCache.add(id);
-      }
-    } catch (e) {
-      // Fallback ignore
-    }
-  }
-  isInitialized = true;
+const dismissed = new Set<string>();
+const listeners = new Set<() => void>();
+let version = 0;
+
+function notify() {
+  version += 1;
+  listeners.forEach((l) => l());
 }
 
 export function isBannerDismissed(permissionId: string): boolean {
-  return memoryCache.has(permissionId);
+  return dismissed.has(permissionId);
 }
 
-export async function dismissBanner(permissionId: string): Promise<void> {
-  memoryCache.add(permissionId);
-  try {
-    await SecureStore.setItemAsync(`${KEY_PREFIX}${permissionId}`, 'true');
-  } catch (e) {
-    // Ignore error
-  }
+export function dismissBanner(permissionId: string): void {
+  if (dismissed.has(permissionId)) return;
+  dismissed.add(permissionId);
+  notify();
 }
 
-export async function resetBannerDismissals(): Promise<void> {
-  memoryCache.clear();
-  const permissionIds = ['contacts', 'notifications', 'microphone', 'camera', 'photos-files'];
-  for (const id of permissionIds) {
-    try {
-      await SecureStore.deleteItemAsync(`${KEY_PREFIX}${id}`);
-    } catch (e) {
-      // Ignore error
-    }
-  }
+/** Simulates an app restart (tests only): the session's dismissals are gone. */
+export function resetBannerDismissals(): void {
+  dismissed.clear();
+  notify();
+}
+
+const subscribe = (l: () => void) => {
+  listeners.add(l);
+  return () => {
+    listeners.delete(l);
+  };
+};
+
+export function useBannerDismissed(permissionId: string): boolean {
+  useSyncExternalStore(subscribe, () => version, () => version);
+  return dismissed.has(permissionId);
 }

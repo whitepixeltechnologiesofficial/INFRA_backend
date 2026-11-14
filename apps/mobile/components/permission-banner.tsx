@@ -2,23 +2,25 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
 import { darkColors as COLORS } from '@/lib/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { dismissBanner, useBannerDismissed } from '@/lib/banner-dismissal';
+
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
 export type PermissionId = 'contacts' | 'notifications' | 'microphone' | 'camera' | 'photos-files';
 
 interface Props {
   permissionId: PermissionId;
-  onDismiss?: () => void;
 }
 
-const PERMISSION_COPY: Record<PermissionId, { title: string; desc: string; icon: keyof typeof Ionicons.prototype.props.name }> = {
+const PERMISSION_COPY: Record<PermissionId, { title: string; desc: string; icon: IconName }> = {
   contacts: {
     title: 'Contacts access denied',
-    desc: 'Your address book won\'t be synced until you allow access in settings.',
+    desc: 'Your address book won\'t be synced until you allow access. You can still start a chat by number.',
     icon: 'people-outline',
   },
   notifications: {
     title: 'Notifications disabled',
-    desc: 'You won\'t receive alerts for new messages. Enable them in settings.',
+    desc: 'You won\'t get alerts while the app is closed. Unread messages still show here.',
     icon: 'notifications-outline',
   },
   microphone: {
@@ -38,8 +40,14 @@ const PERMISSION_COPY: Record<PermissionId, { title: string; desc: string; icon:
   },
 };
 
-export function PermissionBanner({ permissionId, onDismiss }: Props) {
+// PERM-2.4 / PERM-2.14 — one reusable denial banner for all five permissions.
+// Dismissal is session-scoped (lib/banner-dismissal.ts): hidden for the rest
+// of this session once closed, back after an app restart. The Settings link
+// is always present while the banner shows.
+export function PermissionBanner({ permissionId }: Props) {
   const copy = PERMISSION_COPY[permissionId];
+  const dismissed = useBannerDismissed(permissionId);
+  if (dismissed) return null;
 
   const handleOpenSettings = () => {
     Linking.openSettings();
@@ -58,11 +66,15 @@ export function PermissionBanner({ permissionId, onDismiss }: Props) {
             <Text style={styles.settingsLink}>Open Settings</Text>
           </TouchableOpacity>
         </View>
-        {onDismiss && (
-          <TouchableOpacity onPress={onDismiss} style={styles.closeButton}>
-            <Ionicons name="close" size={20} color={COLORS.textDim} />
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          onPress={() => dismissBanner(permissionId)}
+          style={styles.closeButton}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+          hitSlop={8}
+        >
+          <Ionicons name="close" size={20} color={COLORS.textDim} />
+        </TouchableOpacity>
       </View>
     </View>
   );

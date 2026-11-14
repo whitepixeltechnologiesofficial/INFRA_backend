@@ -17,7 +17,6 @@ import {
   Linking,
   RefreshControl,
   Animated as RNAnimated,
-  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -25,9 +24,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { useThemeContext } from '@/providers/ThemeProvider';
 import { useSessionContext } from '@/providers/SessionProvider';
-import { checkMicrophoneState, requestMicrophonePermission } from '@/lib/permissions';
-import { MicGate, classifyMicGranted, decideRecordAction } from '@/lib/voice-note';
+import * as ImagePicker from 'expo-image-picker';
+import { requestPermission } from '@/lib/permissions';
+import { decideRecordAction, formatVoiceDuration, micGateFrom } from '@/lib/voice-note';
+import { decideAttachAction } from '@/lib/attach-gate';
 import { PermissionBanner } from '@/components/permission-banner';
+import { VoiceRecordButton } from '@/components/voice-record-button';
+import { usePermissionState } from '@/hooks/use-permission-state';
+import { lookupNumber, syncContactsFromDevice, useContactSync } from '@/lib/contact-sync';
+import type { MatchedUser } from '@/lib/contact-sync-core';
+import { takeNewIncoming, unreadStore, useUnreadCount } from '@/lib/unread';
 import type { ThemeColors } from '@/lib/theme';
 
 const FONTS = {
@@ -43,6 +49,10 @@ interface Message {
   time: string;
   dateKey: string;
   status?: 'sent' | 'delivered' | 'read';
+  kind?: 'text' | 'voice' | 'image';
+  audioUri?: string;
+  durationSec?: number;
+  imageUri?: string;
 }
 
 interface Contact {
@@ -59,7 +69,36 @@ interface Chat {
   messages: Message[];
   lastMessage?: string;
   lastMessageTime?: string;
-  unreadCount?: number;
+}
+
+function initialsOf(name: string): string {
+  return (
+    name
+      .split(' ')
+      .filter(Boolean)
+      .map((n) => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2) || '?'
+  );
+}
+
+function contactFromMatch(user: MatchedUser, phone = ''): Contact {
+  const name = user.name || phone || 'Unknown';
+  return { id: user.id, name, phone, initials: initialsOf(name), avatar: user.photo ?? null };
+}
+
+function messagePreview(m: Message): string {
+  if (m.kind === 'voice') return `Voice note (${formatVoiceDuration(m.durationSec ?? 0)})`;
+  if (m.kind === 'image') return 'Photo';
+  return m.text;
+}
+
+function openSettingsAlert(title: string, message: string) {
+  Alert.alert(title, message, [
+    { text: 'Not now', style: 'cancel' },
+    { text: 'Open Settings', onPress: () => Linking.openSettings() },
+  ]);
 }
 
 type ChatEntry = { message: Message } | { dateKey: string };
@@ -180,6 +219,7 @@ function ChatItem({
   colors: ThemeColors;
   onPress: () => void;
 }) {
+  const unread = useUnreadCount(chat.id);
   return (
     <TouchableOpacity
       style={[s.chatItem, { borderBottomColor: colors.borderSoft }]}
@@ -192,7 +232,7 @@ function ChatItem({
           <Text style={[s.chatName, { color: colors.text }]} numberOfLines={1}>
             {chat.contact.name}
           </Text>
-          <Text style={[s.chatTime, { color: chat.unreadCount ? colors.accent : colors.textDim }]}>
+          <Text style={[s.chatTime, { color: unread ? colors.accent : colors.textDim }]}>
             {chat.lastMessageTime || ''}
           </Text>
         </View>
@@ -200,9 +240,12 @@ function ChatItem({
           <Text style={[s.chatMessage, { color: colors.textDim }]} numberOfLines={1}>
             {chat.lastMessage || 'No messages yet'}
           </Text>
-          {chat.unreadCount && chat.unreadCount > 0 ? (
-            <View style={[s.unreadBadge, { backgroundColor: colors.accent }]}>
-              <Text style={s.unreadText}>{chat.unreadCount}</Text>
+          {unread > 0 ? (
+            <View
+              style={[s.unreadBadge, { backgroundColor: colors.accent }]}
+              accessibilityLabel={`${unread} unread`}
+            >
+              <Text style={s.unreadText}>{unread > 99 ? '99+' : unread}</Text>
             </View>
           ) : null}
         </View>
@@ -225,47 +268,111 @@ function EmptyState({ colors }: { colors: ThemeColors }) {
   );
 }
 
+function ManualNumberEntry({
+  colors,
+  onStart,
+}: {
+  colors: ThemeColors;
+  onStart: (contact: Contact) => void;
+}) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // PERM-2.4 / Tech Arch §14.3: the typed number is normalized, hashed and
+  // sent to the SAME match endpoint as the contact sync, as a one-item batch.
+  const submit = async () => {
+    if (busy || !value.trim()) return;
+    setBusy(true);
+    setError(null);
+    const result = await lookupNumber(value);
+    setBusy(false);
+    if (result.status === 'invalid') setError('Enter a valid phone number, including the country code.');
+    else if (result.status === 'not_registered') setError("This number isn't on the app yet.");
+    else if (result.status === 'failed') setError("Couldn't check that number. Try again.");
+    else {
+      setValue('');
+      onStart(contactFromMatch(result.user, result.e164));
+    }
+  };
+
+  return (
+    <View style={[s.manualBox, { borderBottomColor: colors.border }]}>
+      <Text style={[s.manualLabel, { color: colors.textDim }]}>Start a chat by number</Text>
+      <View style={s.manualRow}>
+        <TextInput
+          style={[s.manualInput, { color: colors.text, backgroundColor: colors.searchBg, borderColor: colors.border }]}
+          placeholder="+91 98765 43210"
+          placeholderTextColor={colors.textMuted}
+          keyboardType="phone-pad"
+          value={value}
+          onChangeText={(t) => {
+            setValue(t);
+            setError(null);
+          }}
+          onSubmitEditing={submit}
+          returnKeyType="go"
+          accessibilityLabel="Phone number"
+        />
+        <TouchableOpacity
+          style={[s.manualButton, { backgroundColor: colors.accent, opacity: value.trim() && !busy ? 1 : 0.5 }]}
+          onPress={submit}
+          disabled={!value.trim() || busy}
+          accessibilityRole="button"
+          accessibilityLabel="Start chat"
+        >
+          {busy ? <ActivityIndicator color={colors.bg} /> : <Ionicons name="arrow-forward" size={20} color={colors.bg} />}
+        </TouchableOpacity>
+      </View>
+      {error ? <Text style={[s.manualError, { color: colors.danger }]}>{error}</Text> : null}
+    </View>
+  );
+}
+
 function ContactPickerModal({
   visible,
   onClose,
   onSelectContact,
-  loading,
-  contacts,
-  permissionDenied,
-  onRequestPermission,
-  onOpenSettings,
   colors,
 }: {
   visible: boolean;
   onClose: () => void;
   onSelectContact: (contact: Contact) => void;
-  loading: boolean;
-  contacts: Contact[];
-  permissionDenied: boolean;
-  onRequestPermission: () => void;
-  onOpenSettings: () => void;
   colors: ThemeColors;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [contactsState] = usePermissionState('contacts');
+  const sync = useContactSync();
 
-  const filtered = contacts.filter(
-    (c) =>
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.phone.includes(searchQuery),
+  // PERM-2.13: when Contacts turns granted (e.g. back from Settings) the sync
+  // starts in place and the synced list replaces the banner, no navigation.
+  useEffect(() => {
+    if (visible && contactsState === 'granted' && (sync.status === 'idle' || sync.status === 'not_granted')) {
+      void syncContactsFromDevice();
+    }
+  }, [visible, contactsState, sync.status]);
+
+  const synced: Contact[] = useMemo(
+    () => (sync.status === 'completed' ? sync.matches.map((m) => contactFromMatch(m)) : []),
+    [sync],
   );
+  const filtered = synced.filter((c) => c.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  const pick = (contact: Contact) => {
+    onSelectContact(contact);
+    onClose();
+  };
 
   const renderItem = ({ item }: { item: Contact }) => (
-    <TouchableOpacity
-      style={[s.contactItem, { borderBottomColor: colors.borderSoft }]}
-      onPress={() => { onSelectContact(item); onClose(); }}
-    >
+    <TouchableOpacity style={[s.contactItem, { borderBottomColor: colors.borderSoft }]} onPress={() => pick(item)}>
       <Avatar contact={item} colors={colors} size={44} />
       <View style={s.contactInfo}>
         <Text style={[s.contactName, { color: colors.text }]}>{item.name}</Text>
-        <Text style={[s.contactPhone, { color: colors.textDim }]}>{item.phone}</Text>
       </View>
     </TouchableOpacity>
   );
+
+  const granted = contactsState === 'granted';
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent={false}>
@@ -274,22 +381,31 @@ function ContactPickerModal({
           <TouchableOpacity onPress={onClose} style={s.modalBackButton}>
             <Ionicons name="close" size={26} color={colors.text} />
           </TouchableOpacity>
-          <Text style={[s.modalTitle, { color: colors.text }]}>Select contact</Text>
+          <Text style={[s.modalTitle, { color: colors.text }]}>New chat</Text>
           <View style={{ width: 28 }} />
         </View>
 
-        {permissionDenied ? (
-          <View style={s.modalEmpty}>
-            <Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
-            <Text style={[s.modalEmptyText, { color: colors.textDim }]}>Permission denied</Text>
-            <TouchableOpacity style={[s.emptyButton, { backgroundColor: colors.accent }]} onPress={onOpenSettings}>
-              <Text style={[s.emptyButtonText, { color: colors.bg }]}>Open Settings</Text>
-            </TouchableOpacity>
-          </View>
-        ) : loading ? (
+        {contactsState !== null && !granted ? <PermissionBanner permissionId="contacts" /> : null}
+
+        <ManualNumberEntry colors={colors} onStart={pick} />
+
+        {contactsState === null ? null : !granted ? null : sync.status === 'syncing' || sync.status === 'idle' ? (
           <View style={s.modalEmpty}>
             <ActivityIndicator size="large" color={colors.accent} />
-            <Text style={[s.modalEmptyText, { color: colors.textDim }]}>Loading contacts...</Text>
+            <Text style={[s.modalEmptyText, { color: colors.textDim }]}>Syncing contacts...</Text>
+          </View>
+        ) : sync.status === 'failed' ? (
+          <View style={s.modalEmpty}>
+            <Ionicons name="cloud-offline-outline" size={44} color={colors.textDim} />
+            <Text style={[s.modalEmptyText, { color: colors.textDim }]}>
+              {"Contacts couldn't sync. You can still start a chat by number."}
+            </Text>
+            <TouchableOpacity
+              style={[s.emptyButton, { backgroundColor: colors.accent }]}
+              onPress={() => void syncContactsFromDevice()}
+            >
+              <Text style={[s.emptyButtonText, { color: colors.bg }]}>Try again</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <>
@@ -298,7 +414,7 @@ function ContactPickerModal({
                 <Ionicons name="search" size={18} color={colors.textDim} />
                 <TextInput
                   style={[s.searchInput, { color: colors.text }]}
-                  placeholder="Search contacts..."
+                  placeholder="Search contacts on the app..."
                   placeholderTextColor={colors.textDim}
                   value={searchQuery}
                   onChangeText={setSearchQuery}
@@ -312,7 +428,7 @@ function ContactPickerModal({
               contentContainerStyle={s.modalList}
               showsVerticalScrollIndicator={false}
               ListEmptyComponent={
-                <Text style={[s.modalEmptyText, { color: colors.textDim }]}>No contacts found</Text>
+                <Text style={[s.modalEmptyText, { color: colors.textDim }]}>None of your contacts are on the app yet</Text>
               }
             />
           </>
@@ -349,9 +465,21 @@ function MessageBubble({
           isGrouped && !item.sent && { borderTopLeftRadius: 16 },
         ]}
       >
-        <Text style={[s.messageText, { color: item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text }]}>
-          {item.text}
-        </Text>
+        {item.kind === 'image' && item.imageUri ? (
+          <Image source={{ uri: item.imageUri }} style={s.imageMessage} accessibilityLabel="Photo" />
+        ) : item.kind === 'voice' ? (
+          <View style={s.voiceRow} accessibilityLabel={`Voice note, ${formatVoiceDuration(item.durationSec ?? 0)}`}>
+            <Ionicons name="mic" size={18} color={item.sent ? '#0B0F14' : colors.accent} />
+            <View style={[s.voiceTrack, { backgroundColor: item.sent ? 'rgba(0,0,0,0.25)' : colors.border }]} />
+            <Text style={[s.messageText, { color: item.sent ? '#0B0F14' : colors.text }]}>
+              {formatVoiceDuration(item.durationSec ?? 0)}
+            </Text>
+          </View>
+        ) : (
+          <Text style={[s.messageText, { color: item.sent ? (colors.outgoingBubble === '#3FC6B8' ? '#0B0F14' : colors.text) : colors.text }]}>
+            {item.text}
+          </Text>
+        )}
         <View style={s.messageMeta}>
           <Text style={[s.messageTime, { color: item.sent ? 'rgba(0,0,0,0.45)' : colors.textDim }]}>
             {item.time}
@@ -451,20 +579,103 @@ function ChatView({
     return () => sub.remove();
   }, [scrollToBottom]);
 
+  // ── PERM-2.7/2.8: Microphone gate, re-read from the OS on every foreground ──
+  const [micState] = usePermissionState('microphone');
+  const [micAsked, setMicAsked] = useState<ReturnType<typeof micGateFrom> | null>(null);
+  const micGate = micAsked ?? micGateFrom(micState);
+  const [recording, setRecording] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMicAsked(null);
+  }, [micState]);
+
+  // ── PERM-2.9–2.12: Camera and Photos are independent gates ──
+  const [cameraState, refreshCamera] = usePermissionState('camera');
+  const [photosState, refreshPhotos] = usePermissionState('photos');
+
   const sendMessage = () => {
     if (!inputText.trim()) return;
+    appendOutgoing({ text: inputText.trim(), kind: 'text' });
+    setInputText('');
+  };
+
+  // Mic tapped while NOT granted. No recorder exists in this branch: the
+  // VoiceRecordButton (the only owner of an expo-audio recorder) is mounted
+  // only once the gate is granted.
+  const onMicWithoutGrant = async () => {
+    setComposerError(null);
+    const action = decideRecordAction(micGate);
+    if (action === 'denied') {
+      openSettingsAlert(
+        'Microphone access is off',
+        'To record voice notes, allow microphone access for this app in Settings.',
+      );
+      return;
+    }
+    if (action === 'request') {
+      const next = micGateFrom(await requestPermission('microphone'));
+      setMicAsked(next);
+      if (next === 'granted') setComposerError('Microphone on. Hold the mic button to record.');
+    }
+  };
+
+  const sendVoiceNote = (uri: string, durationSec: number) => {
+    setComposerError(null);
+    appendOutgoing({ text: '', kind: 'voice', audioUri: uri, durationSec });
+  };
+
+  const openCamera = async () => {
+    let state = cameraState;
+    if (decideAttachAction(state) === 'ask') state = await requestPermission('camera');
+    await refreshCamera();
+    if (decideAttachAction(state) !== 'open') {
+      openSettingsAlert(
+        'Camera access is off',
+        'To take a photo in a chat, allow camera access in Settings. You can still attach photos from your gallery.',
+      );
+      return;
+    }
+    const res = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
+    if (!res.canceled && res.assets[0]?.uri) appendOutgoing({ text: '', kind: 'image', imageUri: res.assets[0].uri });
+  };
+
+  const openGallery = async () => {
+    let state = photosState;
+    if (decideAttachAction(state) === 'ask') state = await requestPermission('photos');
+    await refreshPhotos();
+    if (decideAttachAction(state) !== 'open') {
+      openSettingsAlert(
+        'Photos access is off',
+        'To attach photos you already have, allow photo access in Settings. You can still take a photo with the camera.',
+      );
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+    if (!res.canceled && res.assets[0]?.uri) appendOutgoing({ text: '', kind: 'image', imageUri: res.assets[0].uri });
+  };
+
+  // Both options are always offered: each one only ever checks its own permission.
+  const openAttachMenu = () => {
+    Alert.alert('Attach', undefined, [
+      { text: 'Take photo', onPress: () => void openCamera() },
+      { text: 'Choose from gallery', onPress: () => void openGallery() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const appendOutgoing = (extra: Pick<Message, 'text'> & Partial<Message>) => {
     const now = new Date();
     const newMsg: Message = {
       id: `m${Date.now()}`,
-      text: inputText.trim(),
       sent: true,
       time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       dateKey: getDateKey(now),
       status: 'sent',
+      ...extra,
     };
     const updatedMessages = [...chat.messages, newMsg];
     setChatMessages(chat.id, updatedMessages);
-    setInputText('');
 
     // Simulate delivery
     setTimeout(() => {
@@ -586,32 +797,58 @@ function ChatView({
           </TouchableOpacity>
         )}
 
+        {composerError ? (
+          <Text style={[s.composerError, { color: colors.textDim, backgroundColor: colors.bg2 }]}>{composerError}</Text>
+        ) : null}
         <View style={[s.inputBar, { backgroundColor: colors.bg2, borderTopColor: colors.border, paddingBottom: keyboardHeight > 0 ? keyboardHeight + 8 : 12 }]}>
-          <TouchableOpacity style={s.attachButton}>
+          <TouchableOpacity
+            style={s.attachButton}
+            onPress={openAttachMenu}
+            disabled={recording}
+            accessibilityRole="button"
+            accessibilityLabel="Attach a photo"
+          >
             <Ionicons name="add-circle-outline" size={28} color={colors.textDim} />
           </TouchableOpacity>
           <View style={[s.inputFieldContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
             <TextInput
               style={[s.inputField, { color: colors.text }]}
-              placeholder="Type a message..."
+              placeholder={recording ? 'Recording... release to send' : 'Type a message...'}
               placeholderTextColor={colors.textMuted}
               value={inputText}
               onChangeText={setInputText}
               returnKeyType="send"
               onSubmitEditing={sendMessage}
+              editable={!recording}
               multiline
             />
           </View>
-          <TouchableOpacity
-            style={[s.sendButton, { backgroundColor: hasText ? colors.accent : colors.accentDim }]}
-            onPress={hasText ? sendMessage : undefined}
-          >
-            <Ionicons
-              name={hasText ? 'send' : 'mic'}
-              size={20}
-              color={hasText ? colors.bg : colors.accent}
+          {hasText ? (
+            <TouchableOpacity
+              style={[s.sendButton, { backgroundColor: colors.accent }]}
+              onPress={sendMessage}
+              accessibilityRole="button"
+              accessibilityLabel="Send"
+            >
+              <Ionicons name="send" size={20} color={colors.bg} />
+            </TouchableOpacity>
+          ) : micGate === 'granted' ? (
+            <VoiceRecordButton
+              colors={colors}
+              onRecorded={sendVoiceNote}
+              onError={setComposerError}
+              onRecordingChange={setRecording}
             />
-          </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[s.sendButton, { backgroundColor: colors.accentDim }]}
+              onPress={onMicWithoutGrant}
+              accessibilityRole="button"
+              accessibilityLabel="Record a voice note"
+            >
+              <Ionicons name="mic" size={20} color={colors.accent} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </View>
@@ -630,17 +867,31 @@ export default function ChatListScreen() {
   const [draftChat, setDraftChat] = useState<Chat | null>(null);
 
   const [showContactPicker, setShowContactPicker] = useState(false);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loadingContacts, setLoadingContacts] = useState(false);
-  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  // PERM-2.5/2.6: notifications state, re-read on every foreground.
+  const [notificationsState] = usePermissionState('notifications');
+
+  // PERM-2.6: in-app unread accounting. An incoming message bumps its chat's
+  // badge unless that chat is open; each message is counted exactly once.
+  const selectedRef = useRef<string | null>(null);
+  const seenIncoming = useRef(new Set<string>());
+  useEffect(() => {
+    selectedRef.current = selectedChatId;
+    if (selectedChatId) unreadStore.onChatOpened(selectedChatId);
+  }, [selectedChatId]);
 
   const setChatMessages = useCallback(
     (chatId: string, messages: Message[]) => {
       const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
       const stamp = {
-        lastMessage: lastMsg ? lastMsg.text : '',
+        lastMessage: lastMsg ? messagePreview(lastMsg) : '',
         lastMessageTime: lastMsg ? lastMsg.time : '',
       };
+
+      const fresh = takeNewIncoming(messages, seenIncoming.current).length;
+      for (let i = 0; i < fresh; i += 1) {
+        unreadStore.onIncomingMessage(chatId, selectedRef.current === chatId);
+      }
 
       setDraftChat((prev) => (prev && prev.id === chatId ? null : prev));
 
@@ -655,57 +906,21 @@ export default function ChatListScreen() {
     [draftChat],
   );
 
-  const loadContactsForPicker = async () => {
-    setLoadingContacts(true);
-    setPermissionDenied(false);
-    try {
-      const { status } = await Contacts.requestPermissionsAsync();
-      if (status !== 'granted') {
-        setPermissionDenied(true);
-        setLoadingContacts(false);
-        return;
-      }
-      const { data } = await Contacts.getContactsAsync({
-        fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers, Contacts.Fields.Image],
-      });
-      const contactList: Contact[] = data
-        .filter((c) => c.phoneNumbers && c.phoneNumbers.length > 0)
-        .map((c) => {
-          const name = c.name || 'Unknown';
-          const phone = c.phoneNumbers?.[0]?.number || '';
-          const initials = name
-            .split(' ')
-            .map((n) => n[0])
-            .join('')
-            .toUpperCase()
-            .slice(0, 2);
-          return { id: c.id || `contact-${Date.now()}`, name, phone, initials, avatar: c.image?.uri || null };
-        });
-      setContacts(contactList);
-    } catch {
-      Alert.alert('Error', 'Could not load contacts.');
-    } finally {
-      setLoadingContacts(false);
-    }
-  };
-
-  const openContactPicker = async () => {
+  const openContactPicker = () => {
     setShowContactPicker(true);
-    await loadContactsForPicker();
   };
 
   const selectContact = (contact: Contact) => {
     setShowContactPicker(false);
     const phoneDigits = contact.phone.replace(/\D/g, '');
-    const existingChat = chats.find(
-      (c) => c.contact.id === contact.id || c.contact.phone.replace(/\D/g, '') === phoneDigits,
-    );
+    const samePhone = (c: Contact) => phoneDigits !== '' && c.phone.replace(/\D/g, '') === phoneDigits;
+    const existingChat = chats.find((c) => c.contact.id === contact.id || samePhone(c.contact));
     if (existingChat) {
       setDraftChat(null);
       setSelectedChatId(existingChat.id);
       return;
     }
-    if (draftChat && draftChat.contact.phone.replace(/\D/g, '') === phoneDigits) {
+    if (draftChat && (draftChat.contact.id === contact.id || samePhone(draftChat.contact))) {
       setSelectedChatId(draftChat.id);
       return;
     }
@@ -748,6 +963,8 @@ export default function ChatListScreen() {
 
       <View style={s.content}>
         <Header colors={colors} onSearchPress={toggleSearch} onMenuPress={() => setShowMenu(true)} />
+
+        {notificationsState === 'denied' ? <PermissionBanner permissionId="notifications" /> : null}
 
         {showSearch && (
           <View style={[s.searchContainer, { backgroundColor: colors.bg, borderBottomColor: colors.border }]}>
@@ -817,11 +1034,6 @@ export default function ChatListScreen() {
         visible={showContactPicker}
         onClose={() => setShowContactPicker(false)}
         onSelectContact={selectContact}
-        loading={loadingContacts}
-        contacts={contacts}
-        permissionDenied={permissionDenied}
-        onRequestPermission={loadContactsForPicker}
-        onOpenSettings={() => Linking.openSettings()}
         colors={colors}
       />
 
@@ -866,6 +1078,26 @@ export default function ChatListScreen() {
 
 const s = StyleSheet.create({
   container: { flex: 1 },
+
+  imageMessage: { width: 200, height: 200, borderRadius: 12, marginBottom: 4 },
+  voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 150 },
+  voiceTrack: { flex: 1, height: 3, borderRadius: 2 },
+  composerError: { fontSize: 13, paddingHorizontal: 16, paddingVertical: 6, fontFamily: FONTS.body },
+
+  manualBox: { paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth },
+  manualLabel: { fontSize: 13, marginBottom: 8, fontFamily: FONTS.bodyMedium },
+  manualRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  manualInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 11 : 8,
+    fontSize: 15,
+    fontFamily: FONTS.body,
+  },
+  manualButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  manualError: { fontSize: 13, marginTop: 8, fontFamily: FONTS.body },
   content: { flex: 1 },
 
   header: {

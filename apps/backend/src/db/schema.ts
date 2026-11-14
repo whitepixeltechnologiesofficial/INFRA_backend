@@ -12,3 +12,5 @@ export { devices, deviceType, platformEnum } from "./devices-schema.js";
 export { pendingMessages } from "./pending-messages-schema.js";
 export { phoneReuseCooldowns } from "./phone-reuse-cooldowns-schema.js";
 export { signedPrekeys, oneTimePrekeys } from "./prekeys-schema.js";
+export { contactHashes } from "./contact-hashes-schema.js";
+export { pushTokens } from "./push-tokens-schema.js";

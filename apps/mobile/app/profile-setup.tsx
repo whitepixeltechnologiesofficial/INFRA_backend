@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { onboardingApi } from '@/api/onboardingApi';
+import { permissionSequence } from '@/lib/permission-flow';
 import { Ionicons } from '@expo/vector-icons';
 
 const COLORS = {
@@ -118,6 +119,7 @@ export default function ProfileSetupScreen() {
         photo: photo || undefined,
         about: about.trim() || DEFAULT_ABOUT,
       });
+      await permissionSequence.arm();
       router.replace('/permission-info');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to set up profile.');

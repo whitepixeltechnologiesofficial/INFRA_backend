@@ -1374,3 +1374,42 @@ implemented and green in the tree from earlier sessions (web-24 37/37, web-25 49
 **User decision: leave the code as-is and EXCLUDE both from the Sprint 3 report** as
 out-of-scope/blocked. Do not revert them, and do not re-open the scope question. They remain
 subject to their real blocker (PERM-2.16) when that sprint is scheduled.
+
+### PERM-2.1 – 2.15 on WEB_QR — PRD fixed sequence rebuilt (VERIFIED, uncommitted)
+
+Branch `WEB_QR` (NOT team-alpha). Its mobile app was a thin version: contextual
+Contacts/Notifications screens, a broken `lib/sha256.ts` (padding sized in words, threw on
+any real input), `expo-notifications`/`expo-audio` missing, sync uploading nowhere. Rebuilt to
+the PRD cards (the report's PERM-2.1 decision was resolved in favour of the PRD):
+
+- **PERM-2.1** `app/permission-info.tsx` = static 5-row explainer (`lib/permission-explainer.ts`),
+  Continue is the ONLY control, no skip/toggles, back + swipe disabled. Profile Setup calls
+  `permissionSequence.arm()` then routes here; `(tabs)/_layout.tsx` redirects here while the
+  sequence is owed. `notifications-info.tsx` deleted.
+- **PERM-2.2** `lib/permission-sequence.ts` (pure): Contacts -> Notifications -> Microphone ->
+  Camera -> Photos, one single-permission call at a time, progress persisted per step in
+  SecureStore `onb.permissionSequence`, resume (not restart) after interruption/kill, OEM silent
+  answers and throwing modules are normal step results. `lib/permission-flow.ts` = app instance
+  + on-grant side effects.
+- **PERM-2.3/2.4** hash = SHA-256(**salt + E.164**) — the BACKEND formula (`utils/phone-hash.ts`);
+  salt served by NEW `GET /api/v1/contacts/config`. `lib/contact-sync-core.ts` (pure) pages,
+  normalizes (default country from own number), skips malformed, dedupes, 250-batches, guards
+  hashes-only, reports failure. Real endpoint `POST /contacts/match` (no mock). New Chat:
+  denied -> banner + no list + manual entry (one-item batch via `lookupNumber`).
+- **PERM-2.5/2.6** NEW backend `push_tokens` (migration **019**), `POST /push/register|unregister`,
+  `src/push/expo-push.ts` (content-free alert, `PUSH_DISABLED=1` off); `relay /send` pushes to
+  devices with no live socket. Mobile `lib/push.ts` (HIGH `messages` channel before the Android 13
+  dialog, Expo token -> backend). Denied: live in-app unread (`takeNewIncoming` + `unreadStore`) +
+  notifications banner.
+- **PERM-2.7/2.8** `components/voice-record-button.tsx` is the ONLY expo-audio recorder and is
+  mounted only when the mic gate is granted (press-and-hold); otherwise Settings dialog, no recorder.
+- **PERM-2.9–2.12** attach menu always offers Take photo + Choose from gallery; each path reads
+  only its own permission (`lib/attach-gate.ts`); denied -> Settings dialog.
+- **PERM-2.13/2.14** `hooks/use-permission-state.ts` re-reads the OS on every foreground;
+  `lib/banner-dismissal.ts` is session memory only (no SecureStore).
+- Verify: `pnpm --filter @wpt/mobile run verify:perm2` **113/113** (sabotage-proven),
+  `pnpm --filter @wpt/backend run verify:perm2` **22/22** over HTTP, push_tokens migration on
+  PGlite 4/4, mobile `tsc` + `expo lint` clean, backend `tsc` clean + eslint clean on touched files
+  (backend `pnpm lint` bin shim is broken: run `node ../../node_modules/eslint/bin/eslint.js`).
+- NOT done: migration 019 not run on Supabase; no device test (real push needs an EAS
+  `projectId` + FCM/APNs creds in a dev build — Expo Go cannot receive remote push); not merged.

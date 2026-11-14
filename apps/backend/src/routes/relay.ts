@@ -20,6 +20,8 @@ import { blocks } from "../db/blocks-schema.js";
 import { pendingMessages } from "../db/pending-messages-schema.js";
 import { phoneHash } from "../utils/phone-hash.js";
 import { pushToDevice } from "../ws/socket-registry.js";
+import { pushTokens } from "../db/push-tokens-schema.js";
+import { sendExpoPush } from "../push/expo-push.js";
 
 const router: Router = Router();
 
@@ -394,6 +396,18 @@ router.post("/send", async (req: Request, res: Response) => {
       }
       return { id: row.id, recipientDeviceId: row.recipientDeviceId, pushed };
     });
+
+    // PERM-2.5: a device with no live socket is backgrounded or closed, so it
+    // gets an OS push instead. Fire-and-forget; never blocks or fails the send.
+    const offline = rows.filter((r) => !r.pushed && r.recipientDeviceId).map((r) => r.recipientDeviceId!);
+    if (offline.length > 0) {
+      void db
+        .select({ token: pushTokens.token })
+        .from(pushTokens)
+        .where(inArray(pushTokens.deviceId, offline))
+        .then((t) => sendExpoPush(t.map((x) => x.token)))
+        .catch(() => console.error("relay push lookup failed"));
+    }
 
     res.json({ success: true, duplicate: false, count: rows.length, rows });
   } catch {

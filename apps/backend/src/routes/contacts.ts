@@ -18,6 +18,21 @@ const router: Router = Router();
 router.use(requireAuth);
 
 const MAX_BATCH_SIZE = 1000;
+
+/**
+ * PERM-2.3 — hashing contract for the device. The phone hashes
+ * SHA-256(salt + normalized E.164) locally and only ever uploads the digest,
+ * so it needs the same global salt the server used for contact_hashes rows.
+ * The salt is a global pepper, not a secret: every client must hold it.
+ */
+router.get("/config", (_req: Request, res: Response) => {
+  const salt = process.env.GLOBAL_SALT || process.env.CONTACT_HASH_SALT;
+  if (!salt) {
+    res.status(503).json({ error: "HASH_SALT_NOT_CONFIGURED" });
+    return;
+  }
+  res.json({ salt, order: "salt+e164", algorithm: "sha256", maxBatch: MAX_BATCH_SIZE });
+});
 const HASH_REGEX = /^[a-f0-9]{64}$/;
 
 router.post("/match", async (req: Request, res: Response) => {
@@ -68,7 +83,7 @@ router.post("/match", async (req: Request, res: Response) => {
         about: u.about ?? "",
       })),
     });
-  } catch (error) {
+  } catch {
     console.error("POST /contacts/match error");
     res.status(500).json({ error: "Internal server error" });
   }
