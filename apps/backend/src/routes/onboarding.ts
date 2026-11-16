@@ -328,10 +328,20 @@ router.post(
 
       // Resend cooldown check (independent 30s timer, §7.2)
       const [existing] = await db
-        .select({ sentAt: otpVerifications.sentAt })
+        .select({ sentAt: otpVerifications.sentAt, lockedUntil: otpVerifications.lockedUntil })
         .from(otpVerifications)
         .where(eq(otpVerifications.phoneNumber, phoneNumber))
         .limit(1);
+
+      // LOGIN-3.6: a locked-out number must not be able to resend (that would
+      // delete the row and wipe the lockout). Lockout and cooldown stay independent.
+      if (existing?.lockedUntil && now < existing.lockedUntil) {
+        res.status(429).json({
+          error: "LOCKED_OUT",
+          secondsRemaining: Math.ceil((existing.lockedUntil.getTime() - now.getTime()) / 1000),
+        });
+        return;
+      }
 
       if (existing) {
         const elapsed = now.getTime() - existing.sentAt.getTime();
@@ -451,6 +461,17 @@ router.post(
         return;
       }
 
+      // LOGIN-3.6: lockout has expired, so start a fresh set of MAX_ATTEMPTS attempts.
+      // Without this, attempts stays at 3 and the next wrong code re-locks at once.
+      if (record.lockedUntil && now >= record.lockedUntil) {
+        await db
+          .update(otpVerifications)
+          .set({ attempts: 0, lockedUntil: null })
+          .where(eq(otpVerifications.phoneNumber, phoneNumber));
+        record.attempts = 0;
+        record.lockedUntil = null;
+      }
+
       // Expiry check
       if (now.getTime() - record.sentAt.getTime() > OTP_TTL_MS) {
         await db
@@ -482,7 +503,7 @@ router.post(
             .set({ lockedUntil })
             .where(eq(otpVerifications.phoneNumber, phoneNumber));
 
-          res.json({ status: "attempts_exhausted" });
+          res.json({ status: "attempts_exhausted", secondsRemaining: LOCKOUT_MS / 1000 });
           return;
         }
 
