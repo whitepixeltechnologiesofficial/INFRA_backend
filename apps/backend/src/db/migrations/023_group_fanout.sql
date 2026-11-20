@@ -1,5 +1,5 @@
 -- ============================================================
--- 020_group_fanout.sql   (BE-5.7)
+-- 023_group_fanout.sql   (BE-5.7)
 -- Run this in: Supabase -> SQL Editor -> New Query -> Run
 --
 -- Group message fan-out. Two changes, both idempotent:

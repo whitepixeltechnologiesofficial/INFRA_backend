@@ -14,7 +14,7 @@
  *   [7] a member removed after the send never receives the queued copy
  *   [8] the 70-member cap: a 70-member group fans out to 69 recipients, the 71st member is refused
  *
- * Requires migrations 018, 019 and 020, and socket.io-client resolvable from apps/backend.
+ * Requires migrations 018, 019 and 023, and socket.io-client resolvable from apps/backend.
  * Run: pnpm --filter @wpt/backend exec tsx src/db/group-fanout-e2e-test.ts
  */
 
@@ -69,7 +69,7 @@ async function main() {
   );
   if (needed.rows[0].uniq !== 1 || needed.rows[0].cap !== 1 || needed.rows[0].m018 !== 1) {
     await pool.end();
-    throw new Error("Migrations 018, 019 and 020 must all be applied first (020 is the BE-5.7 migration).");
+    throw new Error("Migrations 018, 019 and 023 must all be applied first (023 is the BE-5.7 migration).");
   }
 
   let ioClient: IoClient;

@@ -15,7 +15,7 @@
  *    an unknown group, so group ids cannot be probed)
  *  - who_can_send = admins_only: only owner/admin may send
  *  - a group never exceeds 70 members (GROUP_MEMBER_CAP). Adding is capped by
- *    migration 020's trigger; an over-cap group found here is refused rather
+ *    migration 023's trigger; an over-cap group found here is refused rather
  *    than silently truncated
  *  - blocking does NOT apply inside shared groups (PRD 19.8), so there is no
  *    block check on this path, and poll/drain do not filter group rows
@@ -40,7 +40,7 @@ import { pendingMessages } from "../db/pending-messages-schema.js";
 import { getStatuses, recordSentMany, resetFailedToSent, toStatusEvent } from "../db/message-status.js";
 import { pushToDevice } from "../ws/socket-registry.js";
 
-/** PRD 5.7 / 12.8. Mirrored by the trigger in migration 020. */
+/** PRD 5.7 / 12.8. Mirrored by the trigger in migration 023. */
 export const GROUP_MEMBER_CAP = 70;
 
 /**
@@ -204,14 +204,14 @@ export async function handleGroupSend(args: {
         return;
       }
       // A unique violation with NO committed prior send is not a retry. It means the schema is
-      // behind the code: migration 020 has not been applied, so message_status is still unique on
+      // behind the code: migration 023 has not been applied, so message_status is still unique on
       // (sender_device_id, client_message_id) and cannot hold one row per recipient. Reporting
       // `duplicate: true` here would tell the sender the message was sent when nothing was queued,
       // so fail loudly instead and name the constraint for whoever reads the server log.
       console.error(
         `POST /relay/send group fan-out: unique violation with no prior send (constraint ${
           e.constraint ?? e.cause?.constraint ?? "unknown"
-        }). Is migration 020_group_fanout.sql applied?`,
+        }). Is migration 023_group_fanout.sql applied?`,
       );
       res.status(503).json({ error: "GROUP_FANOUT_UNAVAILABLE" });
       return;
