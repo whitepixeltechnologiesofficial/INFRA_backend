@@ -33,7 +33,13 @@ export const messageStatus = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    unique("message_status_sender_msg_uniq").on(table.senderDeviceId, table.clientMessageId),
+    // BE-5.7: one row per RECIPIENT. A 1:1 message still has exactly one row; a group message
+    // has one row per recipient member, which is what gives per-recipient status.
+    unique("message_status_sender_msg_recipient_uniq").on(
+      table.senderDeviceId,
+      table.clientMessageId,
+      table.recipientUserId,
+    ),
     index("idx_message_status_sender_updated").on(table.senderDeviceId, table.updatedAt),
     index("idx_message_status_expires").on(table.expiresAt),
     index("idx_message_status_recipient").on(table.recipientUserId),
