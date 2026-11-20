@@ -364,10 +364,9 @@ router.post("/send", async (req: Request, res: Response) => {
 
     const expiresAt = new Date(Date.now() + MESSAGE_TTL_MS);
     let inserted;
-    let sentStatus;
     try {
       // One transaction: the queue rows and the `sent` status row exist together or not at all.
-      ({ inserted, sentStatus } = await db.transaction(async (tx) => {
+      ({ inserted } = await db.transaction(async (tx) => {
         const rows = await tx
           .insert(pendingMessages)
           .values(
@@ -389,16 +388,15 @@ router.post("/send", async (req: Request, res: Response) => {
             recipientUserId: pendingMessages.recipientUserId,
             createdAt: pendingMessages.createdAt,
           });
-        const status =
-          clientMessageId && targetUserId
-            ? await recordSent(tx, {
-                senderDeviceId: authDeviceId,
-                senderUserId: authUserId,
-                clientMessageId,
-                recipientUserId: targetUserId,
-              })
-            : null;
-        return { inserted: rows, sentStatus: status };
+        if (clientMessageId && targetUserId) {
+          await recordSent(tx, {
+            senderDeviceId: authDeviceId,
+            senderUserId: authUserId,
+            clientMessageId,
+            recipientUserId: targetUserId,
+          });
+        }
+        return { inserted: rows };
       }));
     } catch (err) {
       // Two concurrent retries of the same clientMessageId: the unique index
