@@ -312,7 +312,16 @@ async function main() {
         sock.on("connect", () => res());
         sock.on("connect_error", (e: never) => rej(e));
       });
-      const pushedMsg = new Promise<{ id: string; ciphertext: string }>((res) => sock.on("message", res as (...a: never[]) => void));
+      const pushedMsg = new Promise<{ id: string; ciphertext: string }>((res) =>
+  sock.on(
+    "message",
+    ((m: { id: string; ciphertext: string }) => {
+      // BE-5.6: on connect the server first drains anything queued while offline,
+      // so wait for the live message specifically instead of the first event.
+      if (m.ciphertext === "9988") res(m);
+    }) as (...a: never[]) => void,
+  ),
+);
       const s5 = await api("/send", a!.token, { clientMessageId: randomUUID(), recipients: [{ deviceId: bPhone!.deviceId, ciphertext: "9988" }] });
       const got = await Promise.race([pushedMsg, new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
       check("online recipient gets 'message' pushed, pushed:true", !!got && got.ciphertext === "9988" && s5.json?.rows?.[0]?.pushed === true, { got, s5 });
