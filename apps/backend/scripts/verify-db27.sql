@@ -5,7 +5,7 @@
 -- It follows the 13 prepared test cases from the DB-2.7-V card:
 --   Section A: static assertions (functions/columns/trigger/table)
 --   Section B: run_data_cleanup() functional TCs  (wrapped; ROLLBACK)
---   Section C: cleanup_message_relay() + Storage TCs (wrapped; ROLLBACK)
+--   Section C: cleanup_pending_messages() + Storage TCs (wrapped; ROLLBACK)
 --   Section D: force daily-data-cleanup cron run + inspect the log
 -- All fabricated data is rolled back — nothing persists.
 -- ============================================================
@@ -18,7 +18,7 @@
 SELECT 'A1' AS check_id, p.proname, pg_get_function_result(p.oid) AS returns
 FROM pg_proc p
 WHERE p.pronamespace = 'public'::regnamespace
-  AND p.proname IN ('run_data_cleanup', 'cleanup_message_relay')
+  AND p.proname IN ('run_data_cleanup', 'cleanup_pending_messages')
 ORDER BY p.proname;
 
 -- A2. daily-data-cleanup cron job points at the new function
@@ -30,15 +30,15 @@ SELECT 'A3' AS check_id, column_name, data_type
 FROM information_schema.columns
 WHERE table_schema = 'public' AND table_name = 'report_evidence' AND column_name = 'purged_at';
 
--- A4. media_path exists on message_relay (S11.4)
+-- A4. media_path exists on pending_messages (S11.4)
 SELECT 'A4' AS check_id, column_name, data_type
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'media_path';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'media_path';
 
--- A5. Storage-cleanup trigger attached to message_relay
+-- A5. Storage-cleanup trigger attached to pending_messages
 SELECT 'A5' AS check_id, tgname
 FROM pg_trigger
-WHERE tgrelid = 'public.message_relay'::regclass AND NOT tgisinternal;
+WHERE tgrelid = 'public.pending_messages'::regclass AND NOT tgisinternal;
 
 -- A6. phone_reuse_cooldowns table exists (S6.9)
 SELECT 'A6' AS check_id, column_name, data_type
@@ -126,7 +126,7 @@ FROM public.users WHERE id = 'a2b5a8c6-e3e4-48c3-ac2b-ff64b0231fd0';
 ROLLBACK;
 
 ------------------------------------------------------------------
--- SECTION C — cleanup_message_relay() + Storage (S6.4 / S11.4)
+-- SECTION C — cleanup_pending_messages() + Storage (S6.4 / S11.4)
 -- Wrapped in a transaction and ROLLED BACK.
 ------------------------------------------------------------------
 
@@ -139,19 +139,19 @@ VALUES ('00000000-0000-0000-0000-00000000d270', 'a2b5a8c6-e3e4-48c3-ac2b-ff64b02
 ON CONFLICT (id) DO NOTHING;
 
 -- TC1: delivered          -> should be deleted by cleanup
-INSERT INTO public.message_relay (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at, delivered_at)
+INSERT INTO public.pending_messages (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at, delivered_at)
 VALUES ('00000000-0000-0000-0000-00000000f201', '00000000-0000-0000-0000-00000000d270',
         '00000000-0000-0000-0000-00000000d270', 'a2b5a8c6-e3e4-48c3-ac2b-ff64b0231fd0',
         decode('cafebabe','hex'), 4, now() + interval '1 day', now());
 
 -- TC2: expired            -> should be deleted by cleanup
-INSERT INTO public.message_relay (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at)
+INSERT INTO public.pending_messages (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at)
 VALUES ('00000000-0000-0000-0000-00000000f202', '00000000-0000-0000-0000-00000000d270',
         '00000000-0000-0000-0000-00000000d270', 'a2b5a8c6-e3e4-48c3-ac2b-ff64b0231fd0',
         decode('cafebabe','hex'), 4, now() - interval '1 hour');
 
 -- TC3: neither            -> must SURVIVE cleanup
-INSERT INTO public.message_relay (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at)
+INSERT INTO public.pending_messages (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at)
 VALUES ('00000000-0000-0000-0000-00000000f203', '00000000-0000-0000-0000-00000000d270',
         '00000000-0000-0000-0000-00000000d270', 'a2b5a8c6-e3e4-48c3-ac2b-ff64b0231fd0',
         decode('cafebabe','hex'), 4, now() + interval '1 day');
@@ -164,23 +164,23 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO storage.objects (id, bucket_id, name)
 VALUES (gen_random_uuid(), 'verify-bucket', 'verify-tc4-media.jpg');
 
-INSERT INTO public.message_relay (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at, media_path)
+INSERT INTO public.pending_messages (id, sender_device_id, recipient_device_id, recipient_user_id, ciphertext, size_bytes, expires_at, media_path)
 VALUES ('00000000-0000-0000-0000-00000000f204', '00000000-0000-0000-0000-00000000d270',
         '00000000-0000-0000-0000-00000000d270', 'a2b5a8c6-e3e4-48c3-ac2b-ff64b0231fd0',
         decode('cafebabe','hex'), 4, now() - interval '1 hour', 'verify-tc4-media.jpg');
 
 -- Run the 5-minute cleanup job once
-SELECT public.cleanup_message_relay();
+SELECT public.cleanup_pending_messages();
 
 -- C1. delivered + expired rows gone; "neither" row survives
 SELECT 'C1' AS check_id,
-       (SELECT COUNT(*) FROM public.message_relay WHERE id = '00000000-0000-0000-0000-00000000f201') AS delivered_gone_TC1,
-       (SELECT COUNT(*) FROM public.message_relay WHERE id = '00000000-0000-0000-0000-00000000f202') AS expired_gone_TC2,
-       (SELECT COUNT(*) FROM public.message_relay WHERE id = '00000000-0000-0000-0000-00000000f203') AS neither_survives_TC3;
+       (SELECT COUNT(*) FROM public.pending_messages WHERE id = '00000000-0000-0000-0000-00000000f201') AS delivered_gone_TC1,
+       (SELECT COUNT(*) FROM public.pending_messages WHERE id = '00000000-0000-0000-0000-00000000f202') AS expired_gone_TC2,
+       (SELECT COUNT(*) FROM public.pending_messages WHERE id = '00000000-0000-0000-0000-00000000f203') AS neither_survives_TC3;
 
 -- C2. The media_path row was deleted -> Storage object must be gone too
 SELECT 'C2' AS check_id,
-       (SELECT COUNT(*) FROM public.message_relay WHERE id = '00000000-0000-0000-0000-00000000f204') AS relay_row_gone,
+       (SELECT COUNT(*) FROM public.pending_messages WHERE id = '00000000-0000-0000-0000-00000000f204') AS relay_row_gone,
        (SELECT COUNT(*) FROM storage.objects WHERE name = 'verify-tc4-media.jpg') AS storage_object_gone_TC4;
 
 ROLLBACK;

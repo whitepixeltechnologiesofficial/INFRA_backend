@@ -9,13 +9,13 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- R1 ── DB-2.2-V  pending_messages / message_relay schema
+-- R1 ── DB-2.2-V  pending_messages schema
 -- ---------------------------------------------------------------------------
 SELECT 'R1.1' AS check_id,
        CASE WHEN udt_name = 'message_type_enum' THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(udt_name, 'MISSING') AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'message_type';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'message_type';
 
 SELECT 'R1.2' AS check_id,
        CASE WHEN count(*) = 6 AND string_agg(enumlabel, ',' ORDER BY enumsortorder) =
@@ -25,36 +25,36 @@ FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
 WHERE t.typname = 'message_type_enum';
 
 SELECT 'R1.3' AS check_id,
-       CASE WHEN bool_or(conname = 'message_relay_message_type_check') THEN 'PASS' ELSE 'FAIL' END AS status,
+       CASE WHEN bool_or(conname = 'pending_messages_message_type_check') THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(string_agg(conname, ', ' ORDER BY conname), 'none') AS detail
 FROM pg_constraint
-WHERE conrelid = 'public.message_relay'::regclass
-  AND conname IN ('message_relay_message_type_check','message_relay_recipient_exactly_one','message_relay_size_bytes_non_negative');
+WHERE conrelid = 'public.pending_messages'::regclass
+  AND conname IN ('pending_messages_message_type_check','pending_messages_recipient_exactly_one','pending_messages_size_bytes_non_negative');
 
 SELECT 'R1.4' AS check_id, 'reply_to_id + voice_segment_group_id' AS label,
        string_agg(column_name, ', ' ORDER BY column_name) AS detail,
        CASE WHEN count(*) = 2 THEN 'PASS' ELSE 'FAIL' END AS status
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay'
+WHERE table_schema = 'public' AND table_name = 'pending_messages'
   AND column_name IN ('reply_to_id','voice_segment_group_id');
 
 SELECT 'R1.6' AS check_id,
        CASE WHEN count(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS status,
        string_agg(conname, ', ') AS detail
 FROM pg_constraint
-WHERE conrelid = 'public.message_relay'::regclass AND conname = 'message_relay_recipient_exactly_one';
+WHERE conrelid = 'public.pending_messages'::regclass AND conname = 'pending_messages_recipient_exactly_one';
 
 SELECT 'R1.7' AS check_id,
        CASE WHEN udt_name = 'bytea' THEN 'PASS' ELSE 'FAIL' END AS status,
        udt_name AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'ciphertext';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'ciphertext';
 
 SELECT 'R1.8' AS check_id,
        CASE WHEN column_default LIKE '%30%day%' THEN 'PASS' ELSE 'FAIL' END AS status,
        COALESCE(column_default, 'no default') AS detail
 FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'message_relay' AND column_name = 'expires_at';
+WHERE table_schema = 'public' AND table_name = 'pending_messages' AND column_name = 'expires_at';
 
 -- ---------------------------------------------------------------------------
 -- R2 ── DB-2.3-V  contact_hashes privacy design
@@ -135,6 +135,70 @@ SELECT 'R3.5' AS check_id,
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_name IN ('test_reports','test_report_evidence');
 
+<<<<<<< HEAD
+-- R3.8 ── BE-R2.3: report_evidence.metadata_snapshot jsonb (TAD S6.6) + test mirror
+SELECT 'R3.8' AS check_id,
+       CASE WHEN count(*) FILTER (WHERE table_name = 'report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb'
+                                    AND is_nullable = 'YES') = 1
+             AND count(*) FILTER (WHERE table_name = 'test_report_evidence'
+                                    AND column_name = 'metadata_snapshot'
+                                    AND data_type = 'jsonb') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status,
+       string_agg(table_name || '.' || column_name || ':' || data_type
+                  || CASE WHEN is_nullable = 'YES' THEN ' (nullable)'
+                          ELSE ' NOT NULL' END,
+                  ', ' ORDER BY table_name) AS detail
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name = 'metadata_snapshot'
+  AND table_name IN ('report_evidence','test_report_evidence');
+=======
+-- ── R3.6 ── 013 add_report_columns: new reports columns (enum/uuid+FK/timestamptz)
+SELECT 'R3.6' AS check_id,
+       string_agg(column_name || ':' || udt_name ||
+                  CASE WHEN is_nullable='NO' THEN '!' ELSE '' END,
+                  ', ' ORDER BY ordinal_position) AS detail,
+       CASE WHEN count(*) FILTER (WHERE column_name='reason_category' AND udt_name='report_reason_category') = 1
+             AND count(*) FILTER (WHERE column_name='reported_group_id' AND udt_name='uuid') = 1
+             AND count(*) FILTER (WHERE column_name='evidence_expires_at' AND udt_name='timestamptz' AND is_nullable='NO') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status
+FROM information_schema.columns
+WHERE table_schema='public' AND table_name='reports'
+  AND column_name IN ('reason_category','reported_group_id','evidence_expires_at');
+
+SELECT 'R3.6b' AS check_id,
+       COALESCE((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                 WHERE conrelid='public.reports'::regclass
+                   AND conname='reports_reported_group_id_groups_id_fk'), 'none') AS detail,
+       CASE WHEN count(*) = 1 AND count(*) FILTER (WHERE confrelid='public.groups'::regclass) = 1
+             AND count(*) FILTER (WHERE pg_get_constraintdef(oid) ILIKE '%SET NULL%') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status
+FROM pg_constraint
+WHERE conrelid='public.reports'::regclass AND conname='reports_reported_group_id_groups_id_fk';
+
+SELECT 'R3.6c' AS check_id,
+       string_agg(enumlabel, ',' ORDER BY enumsortorder) AS detail,
+       CASE WHEN string_agg(enumlabel, ',' ORDER BY enumsortorder) = 'spam,harassment,inappropriate_content,other'
+            THEN 'PASS' ELSE 'FAIL' END AS status
+FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+WHERE t.typname='report_reason_category';
+
+-- ── R3.7 ── test_reports is an identical mirror of the 3 new columns ───────
+SELECT 'R3.7' AS check_id,
+       string_agg(column_name || ':' || udt_name ||
+                  CASE WHEN is_nullable='NO' THEN '!' ELSE '' END,
+                  ', ' ORDER BY ordinal_position) AS detail,
+       CASE WHEN count(*) FILTER (WHERE column_name='reason_category' AND udt_name='report_reason_category') = 1
+             AND count(*) FILTER (WHERE column_name='reported_group_id' AND udt_name='uuid') = 1
+             AND count(*) FILTER (WHERE column_name='evidence_expires_at' AND udt_name='timestamptz' AND is_nullable='NO') = 1
+            THEN 'PASS' ELSE 'FAIL' END AS status
+FROM information_schema.columns
+WHERE table_schema='public' AND table_name='test_reports'
+  AND column_name IN ('reason_category','reported_group_id','evidence_expires_at');
+>>>>>>> 8d39b32 (BE-R2.2: add reason_category, reported_group_id, evidence_expires_at to reports)
+
 -- ---------------------------------------------------------------------------
 -- R4 ── DB-2.5-V  audit_log columns + moderation functions
 -- ---------------------------------------------------------------------------
@@ -163,10 +227,10 @@ SELECT 'R5.1' AS check_id, 'F-04 devices.user_id FK' AS label,
        CASE WHEN count(*) >= 1 AND bool_or(conname LIKE 'devices_user_id%') THEN 'PASS' ELSE 'FAIL' END AS status
 FROM pg_constraint WHERE conrelid = 'public.devices'::regclass AND contype = 'f';
 
-SELECT 'R5.2' AS check_id, 'F-05 message_relay.sender_device_id FK' AS label,
+SELECT 'R5.2' AS check_id, 'F-05 pending_messages.sender_device_id FK' AS label,
        string_agg(conname, ', ') AS detail,
        CASE WHEN count(*) >= 1 AND bool_or(conname LIKE '%sender_device_id%') THEN 'PASS' ELSE 'FAIL' END AS status
-FROM pg_constraint WHERE conrelid = 'public.message_relay'::regclass AND contype = 'f';
+FROM pg_constraint WHERE conrelid = 'public.pending_messages'::regclass AND contype = 'f';
 
 SELECT 'R5.3' AS check_id, 'F-06 sms_outbox status CHECK' AS label,
        (SELECT pg_get_constraintdef(oid) FROM pg_constraint
@@ -237,11 +301,11 @@ FROM information_schema.columns
 WHERE table_schema='public' AND column_name='purged_at'
   AND table_name IN ('report_evidence','test_report_evidence');
 
-SELECT 'R7.3' AS check_id, 'message_relay.media_path present' AS label,
+SELECT 'R7.3' AS check_id, 'pending_messages.media_path present' AS label,
        count(*)::text AS detail,
        CASE WHEN count(*) = 1 THEN 'PASS' ELSE 'FAIL' END AS status
 FROM information_schema.columns
-WHERE table_schema='public' AND table_name='message_relay' AND column_name='media_path';
+WHERE table_schema='public' AND table_name='pending_messages' AND column_name='media_path';
 
 SELECT 'R7.4' AS check_id, 'phone_reuse_cooldowns (phone_hash PK + cooldown_until)' AS label,
        string_agg(column_name || ':' || udt_name, ', ' ORDER BY ordinal_position) AS detail,
@@ -250,10 +314,10 @@ SELECT 'R7.4' AS check_id, 'phone_reuse_cooldowns (phone_hash PK + cooldown_unti
 FROM information_schema.columns
 WHERE table_schema='public' AND table_name='phone_reuse_cooldowns';
 
-SELECT 'R7.5' AS check_id, 'storage-purge trigger on message_relay' AS label,
+SELECT 'R7.5' AS check_id, 'storage-purge trigger on pending_messages' AS label,
        string_agg(tgname, ', ') AS detail,
        CASE WHEN count(*) >= 1 AND bool_or(tgname LIKE '%purge%') THEN 'PASS' ELSE 'FAIL' END AS status
-FROM pg_trigger WHERE tgrelid='public.message_relay'::regclass AND NOT tgisinternal;
+FROM pg_trigger WHERE tgrelid='public.pending_messages'::regclass AND NOT tgisinternal;
 
 SELECT 'R7.6' AS check_id, 'cron: daily-data-cleanup -> run_data_cleanup()' AS label,
        string_agg(schedule || '  ' || left(command, 60), ' | ') AS detail,
@@ -261,9 +325,9 @@ SELECT 'R7.6' AS check_id, 'cron: daily-data-cleanup -> run_data_cleanup()' AS l
             THEN 'PASS' ELSE 'FAIL' END AS status
 FROM cron.job;
 
-SELECT 'R7.6b' AS check_id, 'cron: cleanup-message-relay (every 5 min)' AS label,
+SELECT 'R7.6b' AS check_id, 'cron: cleanup-pending-messages (every 5 min)' AS label,
        string_agg(schedule || '  ' || left(command, 60), ' | ') AS detail,
-       CASE WHEN bool_or(jobname='cleanup-message-relay' AND schedule LIKE '%5%')
+       CASE WHEN bool_or(jobname='cleanup-pending-messages' AND schedule LIKE '%5%')
             THEN 'PASS' ELSE 'FAIL' END AS status
 FROM cron.job;
 
@@ -285,7 +349,7 @@ BEGIN;
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO public.message_relay (sender_device_id, recipient_device_id, ciphertext, message_type)
+    INSERT INTO public.pending_messages (sender_device_id, recipient_device_id, ciphertext, message_type)
     VALUES (gen_random_uuid(), gen_random_uuid(), decode('cafebabe','hex'), 'INVALID_TYPE');
     RAISE NOTICE 'FUNC.F1 FAIL: invalid message_type was ACCEPTED';
   EXCEPTION WHEN others THEN
@@ -340,9 +404,108 @@ BEGIN
   END IF;
 END $$;
 
+-- F4 ── group report (013): insert with reported_group_id + reason_category,
+--      read back, confirm evidence_expires_at = created_at + 30 days.
+DO $$
+DECLARE
+  v_group_id  uuid := '00000000-0000-0000-0000-00000000d601';
+  v_report_id uuid := '00000000-0000-0000-0000-00000000d602';
+  v_reason    text;
+  v_group_read uuid;
+  v_expiry    timestamptz;
+  v_created   timestamptz;
+BEGIN
+  INSERT INTO public.groups (id, encrypted_name)
+  VALUES (v_group_id, decode('cafebabe','hex'));
+
+  INSERT INTO public.reports
+      (id, reporter_phone_hash, reported_phone_hash, status,
+       reason_category, reported_group_id)
+  VALUES
+      (v_report_id, 'vh_verify_grep', 'vh_verify_grepd', 'pending',
+       'inappropriate_content', v_group_id);
+
+  SELECT reason_category::text, reported_group_id, evidence_expires_at, created_at
+    INTO v_reason, v_group_read, v_expiry, v_created
+  FROM public.reports WHERE id = v_report_id;
+
+  IF v_reason = 'inappropriate_content' AND v_group_read = v_group_id
+     AND v_expiry IS NOT NULL AND v_expiry = v_created + interval '30 days' THEN
+    RAISE NOTICE 'FUNC.F4 PASS: group report inserted+read back (reason=%, group=%, expiry=created+30d)', v_reason, v_group_read;
+  ELSE
+    RAISE NOTICE 'FUNC.F4 FAIL: reason=%, group=%, expiry=%, created=%', v_reason, v_group_read, v_expiry, v_created;
+  END IF;
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'FUNC.F4 FAIL: % (SQLSTATE=%)', SQLERRM, SQLSTATE;
+END $$;
+
+-- F5 ── reported_group_id FK (013) rejects a non-existent group id
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO public.reports
+        (reporter_phone_hash, reported_phone_hash, reason_category, reported_group_id)
+    VALUES
+        ('vh_verify_bad', 'vh_verify_badd', 'other', 'ffffffff-ffff-ffff-ffff-ffffffffffff');
+    RAISE NOTICE 'FUNC.F5 FAIL: FK allowed a non-existent group id';
+  EXCEPTION WHEN foreign_key_violation THEN
+    RAISE NOTICE 'FUNC.F5 PASS: reported_group_id FK rejected non-existent group (SQLSTATE=23503)';
+  END;
+END $$;
+
+-- F6 ── test_reports mirror (013) accepts the same group report
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname='public' AND c.relname='test_reports') THEN
+    BEGIN
+      INSERT INTO public.test_reports
+          (reporter_phone_hash, reported_phone_hash, reason_category, reported_group_id)
+      VALUES
+          ('vh_verify_tg', 'vh_verify_tgd', 'spam', '00000000-0000-0000-0000-00000000d601');
+      RAISE NOTICE 'FUNC.F6 PASS: test_reports accepted a group report';
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'FUNC.F6 FAIL: % (SQLSTATE=%)', SQLERRM, SQLSTATE;
+    END;
+  ELSE
+    RAISE NOTICE 'FUNC.F6 SKIP: test_reports does not exist in this database';
+  END IF;
+END $$;
+
+-- F7 ── deleting the reported group must NOT delete the report (SET NULL)
+DO $$
+DECLARE
+  v_group_id  uuid := '00000000-0000-0000-0000-00000000d603';
+  v_report_id uuid := '00000000-0000-0000-0000-00000000d604';
+  v_gone      uuid;
+  v_survives  boolean;
+BEGIN
+  INSERT INTO public.groups (id, encrypted_name)
+  VALUES (v_group_id, decode('cafebabe','hex'));
+
+  INSERT INTO public.reports
+      (id, reporter_phone_hash, reported_phone_hash, status,
+       reason_category, reported_group_id)
+  VALUES
+      (v_report_id, 'vh_verify_setnull', 'vh_verify_setnulld', 'pending', 'other', v_group_id);
+
+  DELETE FROM public.groups WHERE id = v_group_id;
+
+  SELECT reported_group_id INTO v_gone FROM public.reports WHERE id = v_report_id;
+  v_survives := EXISTS (SELECT 1 FROM public.reports WHERE id = v_report_id);
+
+  IF v_survives AND v_gone IS NULL THEN
+    RAISE NOTICE 'FUNC.F7 PASS: group deleted -> report survives, reported_group_id=NULL (SET NULL)';
+  ELSE
+    RAISE NOTICE 'FUNC.F7 FAIL: report survived=%, reported_group_id=%', v_survives, v_gone;
+  END IF;
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'FUNC.F7 FAIL: % (SQLSTATE=%)', SQLERRM, SQLSTATE;
+END $$;
+
 ROLLBACK;
 
 -- ============================================================================
--- END — recheck the printed NOTICEs for the functional results (F1–F3).
+-- END — recheck the printed NOTICEs for the functional results (F1–F7).
 -- Static results appear as table rows, functional results as NOTICEs.
 -- ============================================================================

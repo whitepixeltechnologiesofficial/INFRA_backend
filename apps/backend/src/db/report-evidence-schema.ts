@@ -12,6 +12,11 @@
  *     outside the 7-day window;
  *   - an AFTER STATEMENT trigger rebuilds the jsonb snapshot on
  *     the parent report and every evidence row.
+ *
+ * metadata_snapshot — jsonb, nullable. Structured message metadata
+ * captured at report time (message_type, size_bytes, etc.) — NOT
+ * plaintext content, which lives in decrypted_message_snapshot.
+ * Added: BE-R2.3, migration 014.
  */
 
 import {
@@ -39,6 +44,9 @@ export const reportEvidence = pgTable(
       .notNull()
       .defaultNow(),
     decryptedMessageSnapshot: jsonb("decrypted_message_snapshot"),
+    metadataSnapshot: jsonb("metadata_snapshot"),
+    mediaBucket: text("media_bucket"),
+    mediaPath: text("media_path"),
     purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [

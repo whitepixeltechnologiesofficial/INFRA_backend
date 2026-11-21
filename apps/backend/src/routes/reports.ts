@@ -55,11 +55,21 @@ async function resolveSelfPhoneHash(authUserId: string): Promise<string | null> 
 //     createdAt?: string;           // ISO timestamp of the message
 //   }>
 // }
+//
+// KNOWN GAP (BE-R2.5 review, F6): `reason` is accepted and validated by the
+// client's request shape but is NOT persisted — the reports table has no
+// corresponding column, so a reporter's stated reason is silently discarded.
+// Adding the column is a product decision (what is retained, for how long, and
+// whether it is PII in a moderation context), so it is recorded rather than
+// changed here. The parameter is underscore-prefixed to make the drop explicit
+// at the call site instead of leaving a live-looking binding that does nothing.
 // ──────────────────────────────────────────────────
 router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
   try {
     const authUserId = res.locals.auth!.sub;
-    const { reportedPhone, reason, messages } = req.body as {
+
+    const { reportedPhone, reason: _reason, messages } = req.body as {
+
       reportedPhone?: string;
       reason?: string;
       messages?: Array<{ content: string; createdAt?: string }>;
@@ -91,6 +101,10 @@ router.post("/file", fileReportLimit, async (req: Request, res: Response) => {
           reporterPhoneHash: selfHash,
           reportedPhoneHash: reportedHash,
           status: "pending",
+          // Evidence purge rule S15.4: expires 30 days after submission
+          // (created_at defaults to now at insert). DB trigger
+          // tg_reports_evidence_expiry recomputes it for SQL-level inserts.
+          evidenceExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         })
         .returning({ id: reports.id });
 
@@ -172,7 +186,9 @@ router.post("/list", async (_req: Request, res: Response) => {
       .orderBy(desc(reports.createdAt));
 
     res.json({ reports: rows });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /reports/list error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -223,7 +239,9 @@ router.post("/get", async (req: Request, res: Response) => {
       actionedAt: report.actionedAt,
       decryptedMessageSnapshot: report.decryptedMessageSnapshot,
     });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /reports/get error");
     res.status(500).json({ error: "Internal server error" });
   }

@@ -87,3 +87,78 @@ export function pushForceLogout(userId: string, excludeDeviceId: string): void {
 export function getConnectionCount(userId: string): number {
   return connections.get(userId)?.size ?? 0;
 }
+
+/**
+ * BE-6.1 — Push force_logout to exactly ONE device.
+ *
+ * Unlike pushForceLogout() (which targets "everyone EXCEPT the new
+ * device" for the §7.3 phone handoff), linking a new Web browser must
+ * only ever kick the PREVIOUS Web browser — the phone and any other
+ * devices are untouched. Same "the push IS the disconnect signal"
+ * contract as pushForceLogout().
+ */
+export function pushForceLogoutToDevice(userId: string, deviceId: string): void {
+  if (!ioRef) {
+    console.warn("pushForceLogoutToDevice called before socket registry initialized");
+    return;
+  }
+
+  const set = connections.get(userId);
+  if (!set) return;
+
+  for (const entry of set) {
+    if (entry.deviceId === deviceId) {
+      ioRef.to(entry.socketId).emit("force_logout");
+    }
+  }
+}
+
+/**
+ * BE-6.1 — Actually close the live socket(s) for one device.
+ *
+ * Used by POST /linking/logoff, which must close Web's socket
+ * server-side (not just notify it and hope it disconnects itself),
+ * and by /linking/scan when kicking the previous Web browser.
+ */
+export function disconnectDevice(userId: string, deviceId: string): void {
+  if (!ioRef) return;
+
+  const set = connections.get(userId);
+  if (!set) return;
+
+  for (const entry of set) {
+    if (entry.deviceId === deviceId) {
+      ioRef.sockets.sockets.get(entry.socketId)?.disconnect(true);
+    }
+  }
+}
+
+
+/**
+ * BE-5.4 — Push an event to the live socket(s) of exactly ONE device.
+ *
+ * Used by the message pipeline to deliver a relayed envelope in real time.
+ * Returns true if at least one live socket was addressed. A `false` return
+ * is NOT an error: the message is already durable in pending_messages and
+ * the recipient will get it via POST /relay/poll on (re)connect.
+ */
+export function pushToDevice(
+  userId: string,
+  deviceId: string,
+  event: string,
+  payload: unknown,
+): boolean {
+  if (!ioRef) return false;
+
+  const set = connections.get(userId);
+  if (!set) return false;
+
+  let pushed = false;
+  for (const entry of set) {
+    if (entry.deviceId === deviceId) {
+      ioRef.to(entry.socketId).emit(event, payload);
+      pushed = true;
+    }
+  }
+  return pushed;
+}

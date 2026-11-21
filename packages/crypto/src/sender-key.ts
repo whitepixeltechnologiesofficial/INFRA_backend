@@ -9,7 +9,6 @@ import {
   randomNonce,
 } from "./primitives.js";
 
-
 /**
  * Sender Key — group messaging efficiency layer on top of pairwise
  * Double Ratchet sessions (each sender distributes one symmetric chain

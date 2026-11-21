@@ -32,7 +32,7 @@ const BASE = process.env.BACKEND_URL || "http://localhost:4000";
 const API = `${BASE}/api/v1/onboarding`;
 
 const NEW_NUMBER = "+919000000001";
-const EXISTING_NUMBER = "+919000000002";
+
 
 async function post(path: string, body: unknown) {
   const res = await fetch(`${API}${path}`, {
@@ -107,8 +107,8 @@ async function main() {
 
   // Check DB directly for duplicate rows
   console.log("\n4. Checking DB for duplicate rows...");
-  const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const { createPool } = await import("./pool.js");
+  const pool = createPool({ connectionString: process.env.DATABASE_URL });
   const res = await pool.query(
     'SELECT COUNT(*) as count FROM "public"."users" WHERE "phone_number" = $1',
     [NEW_NUMBER]

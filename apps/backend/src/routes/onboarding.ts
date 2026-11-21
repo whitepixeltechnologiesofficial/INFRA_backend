@@ -13,7 +13,7 @@
 
 import { Router, type Request, type Response } from "express";
 import {
-  createHash,
+  createHmac,
   randomUUID,
   randomInt,
   timingSafeEqual,
@@ -26,7 +26,10 @@ import {
   issueAccessToken,
   issueRefreshToken,
   validateRefreshToken,
-  revokeAllUserSessions,
+
+  rotateRefreshToken,
+  CURRENT_LEGAL_VERSION,
+
 } from "../auth/index.js";
 import { getDb } from "../db/index.js";
 import { sessions } from "../db/sessions-schema.js";
@@ -64,8 +67,38 @@ function generateOtpCode(): string {
   return code;
 }
 
+/**
+ * Hash an OTP code for storage and comparison.
+ *
+ * Previously `sha256(code)` — an UNSALTED hash over a 1,000,000-value space.
+ * That is reversible by brute force in microseconds, so any secondary read of
+ * `otp_verifications.code_hash` or `sms_outbox.otp_hash` (a backup, a replica,
+ * a log, an injection bug in an unrelated route, an over-broad admin query)
+ * yields every live OTP without needing an auth vulnerability at all.
+ *
+ * HMAC-SHA256 keyed with a server secret removes the offline attack entirely:
+ * without the key, an attacker cannot test candidates, because the digest of a
+ * guess is not computable. It stays deterministic, which the schema requires —
+ * the verify path recomputes the digest and compares, rather than scanning.
+ *
+ * Keyed by a dedicated secret, not JWT_SECRET, so this key can be rotated
+ * independently of token signing.
+ */
 function hashOtpCode(code: string): string {
-  return createHash("sha256").update(code).digest("hex");
+  return createHmac("sha256", otpHmacSecret()).update(code).digest("hex");
+}
+
+function otpHmacSecret(): string {
+  const secret = process.env.OTP_HMAC_SECRET;
+  if (!secret) {
+    throw new Error(
+      "OTP_HMAC_SECRET is not set. Generate one with: openssl rand -base64 32",
+    );
+  }
+  if (new TextEncoder().encode(secret).byteLength < 32) {
+    throw new Error("OTP_HMAC_SECRET must be at least 32 bytes. Generate one with: openssl rand -base64 32");
+  }
+  return secret;
 }
 
 /**
@@ -94,6 +127,23 @@ function normalizedPhoneKey(prefix: string) {
     const locals = (req.res?.locals ?? {}) as { normalizedPhone?: string };
     return locals.normalizedPhone ? `${prefix}:${locals.normalizedPhone}` : req.ip ?? req.socket.remoteAddress ?? "unknown";
   };
+}
+
+/**
+ * Rate-limit key by CALLER IP, independent of the phone number.
+ *
+ * The per-phone limits alone let anyone who knows a victim's number hold that
+ * victim in permanent lockout: `attempts` is monotonic, so once it reaches the
+ * threshold every further wrong guess re-arms the 30s lockout, and the check
+ * runs before the code comparison — so even a correct code is refused. The
+ * attacker only has to keep guessing; the victim can never get in.
+ *
+ * Capping per IP bounds that regardless of how many numbers one caller targets.
+ * Note the underlying store is per-process, so N instances allow N times the
+ * limit; that limitation is recorded, not solved here.
+ */
+function callerIpKey(prefix: string) {
+  return (req: Request) => `${prefix}:ip:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`;
 }
 
 /**
@@ -171,8 +221,8 @@ async function executeHandoffTransaction({
       }
     }
 
-    // Ensure a matching device row exists so relay/send (sender_device_id
-    // uuid FK) works with the device id minted for this session.
+    // Ensure a matching device row exists so relay/send (pending_messages
+    // sender_device_id uuid FK) works with the device id minted for this session.
     await tx
       .insert(devices)
       .values({
@@ -198,9 +248,10 @@ async function executeHandoffTransaction({
     const { refreshToken, sessionId } = await issueRefreshToken({
       userId,
       deviceId,
-      db: tx as any,
-    });
 
+      db: tx,
+
+    });
     const accessToken = await issueAccessToken({
       userId,
       deviceId,
@@ -238,11 +289,13 @@ router.post("/accept-legal", async (req: Request, res: Response) => {
 
     await recordLegalAcceptance({
       phoneNumber,
-      legalVersion: "v1.0-2024-01-15",
+      legalVersion: CURRENT_LEGAL_VERSION,
     });
 
     res.json({ success: true });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /accept-legal error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -260,6 +313,12 @@ router.post(
     windowMs: 60_000,
     keyFn: normalizedPhoneKey("otp-send"),
     message: "Too many OTP requests. Please wait before retrying.",
+  }),
+  rateLimit({
+    maxRequests: 10,
+    windowMs: 60_000,
+    keyFn: callerIpKey("otp-send"),
+    message: "Too many OTP requests from this network. Please wait before retrying.",
   }),
   async (_req: Request, res: Response) => {
     try {
@@ -313,7 +372,9 @@ router.post(
       await deliverOtpCode(phoneNumber, rawCode);
 
       res.json({ success: true });
-    } catch (err) {
+
+    } catch {
+
       console.error("POST /otp/send error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -332,6 +393,12 @@ router.post(
     windowMs: 60_000,
     keyFn: normalizedPhoneKey("otp-verify"),
     message: "Too many verification attempts. Please wait.",
+  }),
+  rateLimit({
+    maxRequests: 20,
+    windowMs: 60_000,
+    keyFn: callerIpKey("otp-verify"),
+    message: "Too many verification attempts from this network. Please wait.",
   }),
   async (req: Request, res: Response) => {
     try {
@@ -439,7 +506,9 @@ router.post(
         userId: result.userId,
         sessionId: result.sessionId,
       });
-    } catch (err) {
+
+    } catch {
+
       console.error("POST /otp/verify error");
       res.status(500).json({ error: "Internal server error" });
     }
@@ -475,7 +544,9 @@ router.post("/check-existing-user", async (req: Request, res: Response) => {
 
     // Only return boolean — never leak userId here
     res.json({ exists: !!existingUser });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /check-existing-user error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -483,6 +554,14 @@ router.post("/check-existing-user", async (req: Request, res: Response) => {
 
 // ──────────────────────────────────────────────────
 // POST /onboarding/refresh
+//
+// Rotating refresh: every successful call supersedes the presented
+// token and returns a replacement. Presenting an already-rotated token
+// is treated as reuse and revokes the entire token family.
+//
+// BREAKING CHANGE: the response now includes `refreshToken`. Clients
+// must persist it and discard the old one, or their next refresh will
+// be classified as reuse and log them out.
 // ──────────────────────────────────────────────────
 router.post("/refresh", async (req: Request, res: Response) => {
   try {
@@ -495,21 +574,34 @@ router.post("/refresh", async (req: Request, res: Response) => {
       return;
     }
 
-    const session = await validateRefreshToken(presentedToken);
+    const result = await rotateRefreshToken(presentedToken);
 
-    if (!session) {
+    if (result.status === "reuse_detected") {
+      console.error(
+        `Refresh token reuse detected; revoked ${result.revokedCount} session(s) in the family`,
+      );
+      res.status(401).json({
+        error: "REFRESH_TOKEN_REUSE",
+        message: "This refresh token was already used. All sessions have been revoked.",
+      });
+      return;
+    }
+
+    if (result.status === "invalid") {
       res.status(401).json({ error: "INVALID_REFRESH_TOKEN" });
       return;
     }
 
     const accessToken = await issueAccessToken({
-      userId: session.userId,
-      deviceId: session.deviceId,
-      sessionId: session.sessionId,
+      userId: result.userId,
+      deviceId: result.deviceId,
+      sessionId: result.sessionId,
     });
 
-    res.json({ accessToken });
-  } catch (err) {
+
+    res.json({ accessToken, refreshToken: result.refreshToken });
+  } catch {
+
     console.error("POST /refresh error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -541,7 +633,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
     }
 
     // devices.id is a uuid column — coerce arbitrary client device ids to a
-    // uuid so the handoff can bind relay/send (FK on sender_device_id).
+    // uuid so the handoff can bind relay/send (FK on pending_messages.sender_device_id).
     const clientDeviceId = deviceInfo.deviceId;
     const deviceId =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientDeviceId)
@@ -568,7 +660,9 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
       message: `You're now logged in here on ${deviceInfo.deviceName}`,
       previousDevicesLoggedOut: handoff.revokedCount,
     });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /login/handoff error");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -608,7 +702,9 @@ router.post("/session/check", requireAuth, async (req: Request, res: Response) =
     }
 
     res.json({ isValid: true });
-  } catch (err) {
+
+  } catch {
+
     console.error("POST /session/check error");
     res.status(500).json({ error: "Internal server error" });
   }
