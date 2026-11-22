@@ -117,8 +117,8 @@ export default function TabTwoScreen() {
             </View>
           </View>
         }
-        contentContainerStyle={styles.contentContainer}
       >
+        <View style={styles.contentContainer}>
         <View style={styles.greetingContainer}>
           <ThemedText style={[styles.greetingText, { color: isDark ? C.ink : '#c27b10' }]}>
             Welcome to ONB
@@ -175,7 +175,7 @@ export default function TabTwoScreen() {
               )}
 
               {feature.link && (
-                <ExternalLink href={feature.link}>
+                <ExternalLink href={feature.link as any}>
                   <View style={styles.linkContainer}>
                     <ThemedText style={[styles.linkText, { color: isDark ? C.ink : '#c27b10' }]}>
                       Learn more
@@ -210,6 +210,7 @@ export default function TabTwoScreen() {
             </View>
           </View>
         </View>
+      </View>
       </ParallaxScrollView>
     </LinearGradient>
   );

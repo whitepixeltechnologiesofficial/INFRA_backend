@@ -27,7 +27,12 @@ export function useForceLogout(userId: string | null, deviceId: string | null) {
     const connect = async () => {
       const accessToken = await SecureStore.getItemAsync('accessToken');
 
-      const socket = io(`${BACKEND_URL}/realtime`, {
+      // The server attaches Socket.IO to the "/realtime" HTTP path (see
+      // apps/backend/src/app.ts). The default namespace is used, so the path
+      // must be passed as an option — not appended to the URL, which would
+      // target a non-existent namespace.
+      const socket = io(BACKEND_URL, {
+        path: '/realtime',
         transports: ['websocket', 'polling'],
         auth: { userId, deviceId, token: accessToken },
       });
@@ -41,6 +46,13 @@ export function useForceLogout(userId: string | null, deviceId: string | null) {
 
       // §7.3 — force_logout received: old device was superseded.
       socket.on('force_logout', async () => {
+        // This socket speaks for the identity captured in `deviceId`. If the
+        // store now holds a different device, this device re-logged in after
+        // the push was queued — honouring it would wipe the session the user
+        // just created (self-inflicted logout on the same phone).
+        const currentDeviceId = await SecureStore.getItemAsync('deviceId');
+        if (currentDeviceId !== deviceId) return;
+
         await SecureStore.deleteItemAsync('userId');
         await SecureStore.deleteItemAsync('deviceId');
         await SecureStore.deleteItemAsync('accessToken');
