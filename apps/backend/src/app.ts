@@ -64,6 +64,7 @@ export function createApp(): BackendServer {
     }),
   );
 
+  // ── Body parsing with size limit (100 KB max) ──
   // BE-5.4: relay send carries up to 20 devices x 532,480 hex chars, so it gets a larger limit.
 const relayJson = express.json({ limit: "11mb" });
 const defaultJson = express.json({ limit: "100kb" });
