@@ -6,6 +6,12 @@
 // revokedAt is set (another device logged in while we were offline),
 // we silently log out — same as receiving a force_logout push.
 //
+// ONB-1.7 — while the app is ACTIVE, session validity is also verified on a
+// bounded ~30s polling loop so a connected old device is cut off promptly when
+// a new device logs in (no warning UI, silent). Polling pauses while the app is
+// backgrounded/inactive and resumes on foreground; timers and listeners are
+// cleaned up on unmount, and logout navigation is de-duplicated.
+//
 // SECURITY: userId is never sent in request bodies — the backend
 // derives it from the verified JWT access token.
 
@@ -14,10 +20,10 @@ import { onboardingApi } from '@/api/onboardingApi';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { Platform, AppState, AppStateStatus } from 'react-native';
+import { getOrCreateDeviceId } from '@/lib/device-identity';
+import { SessionPoller } from '@/lib/session-policy';
 
-const getDeviceId = (): string => {
-  return `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-};
+const POLL_INTERVAL_MS = 30_000;
 
 const getDeviceName = (): string => {
   const platform = Platform.OS === 'ios' ? 'iPhone' : 'Android';
@@ -34,14 +40,42 @@ export const useSession = () => {
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const appState = useRef(AppState.currentState);
+  const loggedOutRef = useRef(false);
+  const pollerRef = useRef<SessionPoller | null>(null);
 
-  // ── §7.3: Resume-time validation ──
+  // ── ONB-1.7: bounded background-aware polling. Only runs while the app is
+  // ACTIVE (foreground) AND a session exists. The SessionPoller is a singleton:
+  // at most one interval, paused on background, resumed on foreground, torn
+  // down on unmount / state change — no duplicate timers, no leaked intervals.
+  useEffect(() => {
+    if (!userId || !deviceId) return;
+
+    const validate = () => {
+      validateSession(deviceId);
+    };
+
+    const poller = new SessionPoller(validate, POLL_INTERVAL_MS);
+    poller.start();
+    pollerRef.current = poller;
+
+    return () => {
+      poller.stop();
+      if (pollerRef.current === poller) pollerRef.current = null;
+    };
+  }, [userId, deviceId, isAuthenticated]);
+
+  // ── §7.3: Foreground transition + active-state tracking ──
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (appState.current.match(/background/) && next === 'active') {
+      const wasBackground = appState.current.match(/background/);
+      appState.current = next;
+      const isActive = next === 'active';
+
+      pollerRef.current?.setActive(isActive);
+
+      if (wasBackground && isActive) {
         checkSession();
       }
-      appState.current = next;
     });
 
     return () => sub.remove();
@@ -53,6 +87,7 @@ export const useSession = () => {
   }, []);
 
   const initializeSession = async () => {
+    loggedOutRef.current = false;
     try {
       const storedUserId = await SecureStore.getItemAsync('userId');
       const storedDeviceId = await SecureStore.getItemAsync('deviceId');
@@ -61,9 +96,9 @@ export const useSession = () => {
       if (storedUserId && storedDeviceId && storedAccessToken) {
         setUserId(storedUserId);
         setDeviceId(storedDeviceId);
-        const storedDisplayPhone = await SecureStore.getItemAsync('displayPhone');
-        if (storedDisplayPhone) setDisplayPhone(storedDisplayPhone);
-        await validateSession(storedDeviceId);
+        setDisplayPhone(await SecureStore.getItemAsync('displayPhone'));
+        const isValid = await validateSession(storedDeviceId);
+        if (isValid) setIsAuthenticated(true);
       } else if (storedUserId || storedDeviceId) {
         await SecureStore.deleteItemAsync('userId');
         await SecureStore.deleteItemAsync('deviceId');
@@ -96,15 +131,45 @@ export const useSession = () => {
       setSessionMessage(null);
       return true;
     } catch (error) {
+      // Network failure / backend unreachable — do NOT cut a live user off
+      // just because a check request failed. The next poll / foreground
+      // resume retries; a revoked session is only acted on when the backend
+      // (the source of truth) actually reports it.
       console.warn('Session check failed (network?):', error);
       return true;
     }
   };
 
-  /** Silent logout — clear all local state, navigate to phone-entry. */
+  const refreshSession = async (newDeviceId?: string | null): Promise<boolean> => {
+    try {
+      const storedUserId = await SecureStore.getItemAsync('userId');
+      const did = newDeviceId ?? (await getOrCreateDeviceId());
+      const isValid = await validateSession(did);
+      if (!isValid) return false;
+
+      if (storedUserId) setUserId(storedUserId);
+      setDeviceId(did);
+      setIsAuthenticated(true);
+      setSessionValid(true);
+      setSessionMessage(null);
+      return true;
+    } catch (error) {
+      console.error('Failed to refresh session:', error);
+      return false;
+    }
+  };
+
+  /**
+   * Silent logout — clear all local state, navigate to phone-entry.
+   * NO warning, NO alert, NO toast: the cutoff must be silent (ONB-1.7).
+   * De-duplicated so concurrent poll + foreground-resume checks don't navigate
+   * twice.
+   */
   const silentLogout = async () => {
+    if (loggedOutRef.current) return;
+    loggedOutRef.current = true;
+
     setSessionValid(false);
-    setSessionMessage('Logged in on another device');
     await SecureStore.deleteItemAsync('userId');
     await SecureStore.deleteItemAsync('deviceId');
     await SecureStore.deleteItemAsync('accessToken');
@@ -125,10 +190,12 @@ export const useSession = () => {
   /**
    * ONB-1.7: Create a new session for the current device.
    * Uses the refresh token from SecureStore to authenticate the handoff.
+   * Uses the STABLE persisted device identity so a re-login on the same
+   * physical device does not mint a brand-new identity.
    */
   const createSession = async (newUserId: string) => {
     try {
-      const newDeviceId = getDeviceId();
+      const newDeviceId = await getOrCreateDeviceId();
       const deviceName = getDeviceName();
       const platform = Platform.OS === 'ios' ? 'ios' : 'android';
 
@@ -144,11 +211,17 @@ export const useSession = () => {
         },
       });
 
-      await SecureStore.setItemAsync('userId', newUserId);
-      await SecureStore.setItemAsync('deviceId', newDeviceId);
+      loggedOutRef.current = false;
+      const activeDeviceId = result.deviceId ?? newDeviceId;
+      await Promise.all([
+        SecureStore.setItemAsync('userId', newUserId),
+        SecureStore.setItemAsync('deviceId', activeDeviceId),
+        SecureStore.setItemAsync('accessToken', result.accessToken),
+        SecureStore.setItemAsync('refreshToken', result.refreshToken),
+      ]);
 
       setUserId(newUserId);
-      setDeviceId(newDeviceId);
+      setDeviceId(activeDeviceId);
       setIsAuthenticated(true);
       setSessionValid(true);
       setSessionMessage(result.message);
@@ -161,6 +234,7 @@ export const useSession = () => {
   };
 
   const logout = async () => {
+    loggedOutRef.current = true;
     await SecureStore.deleteItemAsync('userId');
     await SecureStore.deleteItemAsync('deviceId');
     await SecureStore.deleteItemAsync('accessToken');
@@ -183,7 +257,9 @@ export const useSession = () => {
     sessionValid,
     sessionMessage,
     createSession,
+    refreshSession,
     checkSession,
     logout,
+    silentLogout,
   };
 };

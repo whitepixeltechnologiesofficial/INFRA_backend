@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <defs>
+    <filter id="blur"><feGaussianBlur stdDeviation="55"/></filter>
+    <radialGradient id="cool"><stop offset="0" stop-color="#22c55e" stop-opacity=".72"/><stop offset="1" stop-color="#22c55e" stop-opacity="0"/></radialGradient>
+    <radialGradient id="mod"><stop offset="0" stop-color="#facc15" stop-opacity=".78"/><stop offset="1" stop-color="#facc15" stop-opacity="0"/></radialGradient>
+    <radialGradient id="hot"><stop offset="0" stop-color="#f97316" stop-opacity=".82"/><stop offset="1" stop-color="#f97316" stop-opacity="0"/></radialGradient>
+    <radialGradient id="ext"><stop offset="0" stop-color="#991b1b" stop-opacity=".9"/><stop offset="1" stop-color="#dc2626" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="800" fill="#94a3b8" opacity=".12"/>
+  <g filter="url(#blur)">
+    <ellipse cx="300" cy="510" rx="250" ry="210" fill="url(#cool)"/>
+    <ellipse cx="520" cy="390" rx="290" ry="240" fill="url(#mod)"/>
+    <ellipse cx="720" cy="470" rx="310" ry="250" fill="url(#hot)"/>
+    <ellipse cx="880" cy="300" rx="220" ry="190" fill="url(#ext)"/>
+    <ellipse cx="1030" cy="610" rx="190" ry="150" fill="url(#mod)"/>
+  </g>
+  <g opacity=".48" fill="#64748b">
+    <path d="M70 620 C180 560 250 690 350 620 S520 580 600 650 760 700 850 630 1050 540 1140 620 L1140 800 L70 800Z"/>
+  </g>
+</svg>

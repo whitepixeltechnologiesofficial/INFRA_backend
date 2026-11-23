@@ -1,6 +1,6 @@
 export { sessions } from "./sessions-schema.js";
 export { legalAcceptances } from "./legal-acceptances-schema.js";
-export { users } from "./users-schema.js";
+export { users, accountStatus } from "./users-schema.js";
 export { otpVerifications } from "./otp-verifications-schema.js";
 export { smsOutbox } from "./sms-outbox-schema.js";
 export { blocks } from "./blocks-schema.js";
@@ -13,4 +13,8 @@ export { pendingMessages } from "./pending-messages-schema.js";
 export { phoneReuseCooldowns } from "./phone-reuse-cooldowns-schema.js";
 export { signedPrekeys, oneTimePrekeys } from "./prekeys-schema.js";
 export { contactHashes } from "./contact-hashes-schema.js";
+export { messageStatus } from "./message-status-schema.js";
+export { dashboardSessions } from "./dashboard-sessions-schema.js";
 export { pushTokens } from "./push-tokens-schema.js";
+export { chatMutes } from "./chat-mutes-schema.js";
+export { rateLimitCounters } from "./rate-limit-counters-schema.js";

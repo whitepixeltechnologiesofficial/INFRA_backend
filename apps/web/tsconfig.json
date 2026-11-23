@@ -13,6 +13,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@wpt/shared": [
+        "../../packages/shared/src/index.ts"
+      ],
+      "@wpt/api-client": [
+        "../../packages/api-client/src/index.ts"
       ]
     },
     "allowJs": true,

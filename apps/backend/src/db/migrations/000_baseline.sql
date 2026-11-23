@@ -1,0 +1,25 @@
+-- ============================================================
+-- 000_baseline.sql   (Database Baseline)
+--
+-- Baseline of live schema. Only for building an EMPTY database. Never run on live.
+-- Baseline migration recording the starting database state.
+--
+-- STATUS: AUTHORIZED LIVE DATABASE ACCESS BLOCKED
+--   - pg_dump --schema-only against the authorized live database could
+--     not be performed: the local PostgreSQL 16 instance requires a
+--     password that was set interactively and is not available to this
+--     process, and remote/Supabase databases are out of scope.
+--   - Per the toolkit, an empty local database dump is NOT treated as
+--     the live schema baseline, and no schema is invented here.
+--
+-- The local development database (postgres) currently contains zero
+-- application tables (only the adminpack extension is installed).
+-- No DDL is emitted at baseline: the database starts empty and no
+-- schema is fabricated. Subsequent migrations (001, 002, ...) are
+-- applied on top of this baseline once authorized live database
+-- access is restored.
+--
+-- The authoritative live schema baseline must be captured with
+-- `pg_dump --schema-only` against the authorized live database once
+-- access is available (currently BLOCKED - see Requirement 1).
+-- ============================================================

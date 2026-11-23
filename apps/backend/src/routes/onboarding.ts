@@ -13,6 +13,7 @@
 
 import { Router, type Request, type Response } from "express";
 import {
+  createHash,
   createHmac,
   randomUUID,
   randomInt,
@@ -155,6 +156,21 @@ function timingSafeHashCompare(a: string, b: string): boolean {
   const bBuf = Buffer.from(b, "hex");
   if (aBuf.length !== bBuf.length) return false;
   return timingSafeEqual(aBuf, bBuf);
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function stableUuid(value: string): string {
+  const hex = createHash("sha256").update(value).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${((parseInt(hex.slice(16, 17), 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function resolveDeviceId(clientDeviceId?: unknown): string {
+  const source =
+    typeof clientDeviceId === "string" && clientDeviceId.length > 0
+      ? clientDeviceId
+      : randomUUID();
+  return UUID_PATTERN.test(source) ? source : stableUuid(source);
 }
 
 /**
@@ -403,7 +419,10 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const phoneNumber = (res.locals as { normalizedPhone?: string }).normalizedPhone as string;
-      const { code } = req.body as { code?: string };
+      const { code, deviceId: clientDeviceId } = req.body as {
+        code?: string;
+        deviceId?: string;
+      };
 
       if (!code) {
         res.status(400).json({ error: "phoneNumber and code are required" });
@@ -491,7 +510,7 @@ router.post(
       }
 
       // SUCCESS — Atomic handoff transaction
-      const deviceId = randomUUID();
+      const deviceId = resolveDeviceId(clientDeviceId);
       const result = await executeHandoffTransaction({
         userId: "",
         deviceId,
@@ -505,6 +524,8 @@ router.post(
         refreshToken: result.refreshToken,
         userId: result.userId,
         sessionId: result.sessionId,
+        deviceId,
+        previousDevicesLoggedOut: result.revokedCount,
       });
 
     } catch {
@@ -634,11 +655,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
 
     // devices.id is a uuid column — coerce arbitrary client device ids to a
     // uuid so the handoff can bind relay/send (FK on pending_messages.sender_device_id).
-    const clientDeviceId = deviceInfo.deviceId;
-    const deviceId =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientDeviceId)
-        ? clientDeviceId
-        : randomUUID();
+    const deviceId = resolveDeviceId(deviceInfo.deviceId);
 
     // Validate the refresh token — proves the caller owns this account
     const session = await validateRefreshToken(presentedToken);
@@ -658,6 +675,7 @@ router.post("/login/handoff", async (req: Request, res: Response) => {
       accessToken: handoff.accessToken,
       refreshToken: handoff.refreshToken,
       message: `You're now logged in here on ${deviceInfo.deviceName}`,
+      deviceId,
       previousDevicesLoggedOut: handoff.revokedCount,
     });
 

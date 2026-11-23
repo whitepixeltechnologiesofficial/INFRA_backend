@@ -11,10 +11,12 @@ import blocksRoutes from "./routes/blocks.js";
 import reportsRoutes from "./routes/reports.js";
 import moderationRoutes from "./routes/moderation.js";
 import relayRoutes from "./routes/relay.js";
+import messageStatusRoutes from "./routes/message-status.js";
 import prekeysRoutes from "./routes/prekeys.js";
 import linkingRoutes from "./routes/linking.js";
 import contactsRoutes from "./routes/contacts.js";
 import pushRoutes from "./routes/push.js";
+import { drainQueuedMessages } from "./ws/offline-drain.js";
 import {
   initSocketRegistry,
   registerSocket,
@@ -77,6 +79,7 @@ export function createApp(): BackendServer {
   app.use(`/api/${API_VERSION}/blocks`, blocksRoutes);
   app.use(`/api/${API_VERSION}/reports`, reportsRoutes);
   app.use(`/api/${API_VERSION}/moderation`, moderationRoutes);
+  app.use(`/api/${API_VERSION}/relay/status`, messageStatusRoutes);
   app.use(`/api/${API_VERSION}/relay`, relayRoutes);
   app.use(`/api/${API_VERSION}/prekeys`, prekeysRoutes);
   app.use(`/api/${API_VERSION}/linking`, linkingRoutes);
@@ -202,6 +205,13 @@ export function createApp(): BackendServer {
     const deviceId = socket.handshake.auth?.deviceId as string;
 
     registerSocket(socket, userId, deviceId);
+
+    // BE-5.6: the device is (re)connected -- push everything queued for it while it was
+    // offline. Registered first, so a message sent mid-drain is still live-pushed (the
+    // client dedupes by message id).
+    void drainQueuedMessages(socket, userId, deviceId).catch(() => {
+      console.error("BE-5.6 queue drain failed");
+    });
 
     socket.on("disconnect", () => {
       unregisterSocket(socket, userId);

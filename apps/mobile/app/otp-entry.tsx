@@ -1,5 +1,8 @@
 // app/otp-entry.tsx
 import { onboardingApi } from '@/api/onboardingApi';
+import { getOrCreateDeviceId } from '@/lib/device-identity';
+import { resolvePostLoginRoute } from '@/lib/session-policy';
+import { useSessionContext } from '@/providers/SessionProvider';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
@@ -57,6 +60,7 @@ export default function OtpEntryScreen() {
   const [error, setError] = useState('');
 
   const keyboardHeight = useKeyboardHeight();
+  const { refreshSession } = useSessionContext();
   const shake = useRef(new Animated.Value(0)).current;
   const inputRefs = useRef<(TextInput | null)[]>([]);
 
@@ -122,11 +126,15 @@ export default function OtpEntryScreen() {
       setIsVerifying(true);
 
       try {
-        const result = await onboardingApi.verifyOtp({ phoneNumber, code: entered });
+        const stableDeviceId = await getOrCreateDeviceId();
+        const result = await onboardingApi.verifyOtp({
+          phoneNumber,
+          code: entered,
+          deviceId: stableDeviceId,
+        });
 
         if (result.status === 'success') {
-          const deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-          // Write all tokens in parallel â€” saves ~100ms on cold storage.
+          const deviceId = result.deviceId ?? stableDeviceId;
           await Promise.all([
             SecureStore.setItemAsync('userId', result.userId),
             SecureStore.setItemAsync('deviceId', deviceId),
@@ -135,13 +143,19 @@ export default function OtpEntryScreen() {
             SecureStore.setItemAsync('displayPhone', displayPhone),
           ]);
 
-          if (result.routing === 'chats') {
-            router.replace('/(tabs)');
-          } else {
+          const refreshed = await refreshSession(deviceId);
+          if (!refreshed) return;
+
+          const postLoginRoute = resolvePostLoginRoute(result);
+          if (postLoginRoute === 'profile_setup') {
             router.replace({
               pathname: '/profile-setup',
               params: { phoneNumber, displayPhone },
             });
+          } else if (postLoginRoute === 'device-handoff') {
+            router.replace({ pathname: '/device-handoff', params: { fromOtp: '1' } });
+          } else {
+            router.replace('/(tabs)');
           }
         } else if (result.status === 'wrong_code') {
           const remaining = result.attemptsRemaining;
@@ -171,7 +185,7 @@ export default function OtpEntryScreen() {
         setIsVerifying(false);
       }
     },
-    [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake],
+    [isLocked, lockoutSeconds, phoneNumber, displayPhone, runShake, refreshSession],
   );
 
   // --- OTP input handlers ---
