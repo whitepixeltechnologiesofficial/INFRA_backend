@@ -32,7 +32,7 @@
 import pg from "pg";
 import { createClient } from "@supabase/supabase-js";
 
-const EVIDENCE_TABLES = ["report_evidence", "test_report_evidence"] as const;
+const EVIDENCE_TABLES = ["public.report_evidence", "test.test_report_evidence"] as const;
 const BATCH_LIMIT = 500;
 const EXPIRED_SQL =
   "(purged_at IS NOT NULL OR captured_at < now() - interval '30 days')";
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     for (const table of EVIDENCE_TABLES) {
       const { rows } = await pool.query<MediaRow>(
         `SELECT id, media_bucket, media_path
-           FROM public.${table}
+           FROM ${table}
           WHERE media_path IS NOT NULL AND ${EXPIRED_SQL}
           ORDER BY captured_at
           LIMIT ${BATCH_LIMIT}`,
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
         // Step 2: database row, only after Storage succeeded.
         try {
           await pool.query(
-            `DELETE FROM public.${table} WHERE id = $1 AND ${EXPIRED_SQL}`,
+            `DELETE FROM ${table} WHERE id = $1 AND ${EXPIRED_SQL}`,
             [row.id],
           );
         } catch (err) {
