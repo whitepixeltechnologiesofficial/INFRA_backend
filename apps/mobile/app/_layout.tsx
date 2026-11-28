@@ -1,11 +1,34 @@
 import { DarkTheme, DefaultTheme, ThemeProvider as NavThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
 import { Lato_400Regular, Lato_400Regular_Italic, Lato_700Bold, Lato_900Black } from '@expo-google-fonts/lato';
 import { ThemeProvider, useThemeContext } from '@/providers/ThemeProvider';
-import { SessionProvider } from '@/providers/SessionProvider';
+import { SessionProvider, useSessionContext } from '@/providers/SessionProvider';
+
+// ONB-1.1 — the ONLY screens you may open without being logged in.
+const PUBLIC_SCREENS = ['index', 'splash', 'legal-acceptance', 'phone-entry', 'otp-entry'];
+
+// Door guard: if you are not logged in and you are on any other screen,
+// go back to the splash screen. Works for taps, back buttons AND deep links.
+function AuthGate() {
+  const { isLoading, isAuthenticated } = useSessionContext();
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (isLoading) return;                     // wait until we know
+    const first = segments[0] ?? 'index';      // which screen are we on?
+    const isPublic = PUBLIC_SCREENS.includes(first);
+    if (!isAuthenticated && !isPublic) {
+      router.replace('/');                     // back to splash
+    }
+  }, [isLoading, isAuthenticated, segments, router]);
+
+  return null;
+}
 
 function RootLayoutInner() {
   const { colorScheme, colors } = useThemeContext();
@@ -28,6 +51,7 @@ function RootLayoutInner() {
   return (
     <NavThemeProvider value={navTheme}>
       <SessionProvider>
+        <AuthGate />
         <Stack
           screenOptions={{
             headerShown: false,
