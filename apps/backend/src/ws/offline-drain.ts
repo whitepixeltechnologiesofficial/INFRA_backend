@@ -28,7 +28,8 @@ import { devices } from "../db/devices-schema.js";
 import { users } from "../db/users-schema.js";
 import { pendingMessages } from "../db/pending-messages-schema.js";
 import { phoneHash } from "../utils/phone-hash.js";
-import { blockedPartnerHashes, resolvePhoneHashForUser } from "../routes/relay.js";
+import { blockedPartnerHashes, isAddressedToUser, resolvePhoneHashForUser } from "../routes/relay.js";
+import { groupRowStillDeliverable } from "../routes/relay-group.js";
 
 // PLACEHOLDERS until the TAD offline-handling spec is confirmed.
 export const DRAIN_BATCH_SIZE = 50;
@@ -65,7 +66,10 @@ export async function drainQueuedMessages(
     while (socket.connected) {
       const conds = [
         eq(pendingMessages.recipientDeviceId, deviceId),
-        eq(pendingMessages.recipientUserId, userId),
+        // 1:1 rows carry the user id, BE-5.7 group rows only the group id: check via device ownership.
+        isAddressedToUser(userId),
+        // A member removed from the group after the send no longer receives its queued copy.
+        groupRowStillDeliverable(),
         isNull(pendingMessages.deliveredAt),
         gt(pendingMessages.expiresAt, new Date()),
       ];
@@ -88,6 +92,7 @@ export async function drainQueuedMessages(
           createdAt: pendingMessages.createdAt,
           createdAtRaw: sql<string>`${pendingMessages.createdAt}::text`.as("created_at_raw"),
           clientMessageId: pendingMessages.clientMessageId,
+          recipientGroupId: pendingMessages.recipientGroupId,
           senderPhone: users.phoneNumber,
         })
         .from(pendingMessages)
@@ -101,7 +106,8 @@ export async function drainQueuedMessages(
 
       for (const r of rows) {
         // DB-2.4: never hand a blocked partner's message to the recipient (same rule as /relay/poll).
-        if (r.senderPhone && blockedPartners.has(phoneHash(r.senderPhone))) continue;
+        // PRD 19.8: blocking does not apply inside shared groups.
+        if (!r.recipientGroupId && r.senderPhone && blockedPartners.has(phoneHash(r.senderPhone))) continue;
         if (!socket.connected) break;
         // Same payload shape as the live push in POST /relay/send.
         socket.emit("message", {
@@ -111,6 +117,7 @@ export async function drainQueuedMessages(
           messageType: r.messageType,
           sizeBytes: r.sizeBytes,
           clientMessageId: r.clientMessageId,
+          groupId: r.recipientGroupId,
           createdAt: r.createdAt,
         });
         pushed++;

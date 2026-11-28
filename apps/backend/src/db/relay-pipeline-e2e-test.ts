@@ -184,8 +184,8 @@ async function main() {
       (await api("/send", a!.token, { clientMessageId: randomUUID(), recipients: [{ deviceId: a!.deviceId, ciphertext: "aabb" }] })).status === 400,
     );
     check(
-      "group send -> 400 (BE-5.7)",
-      (await api("/send", a!.token, { clientMessageId: randomUUID(), recipientGroupId: randomUUID(), ciphertext: "aabb" })).status === 400,
+      "group send to an unknown group -> 404 (BE-5.7 fan-out; full coverage in group-fanout-e2e-test.ts)",
+      (await api("/send", a!.token, { clientMessageId: randomUUID(), recipientGroupId: randomUUID(), ciphertext: "aabb" })).status === 404,
     );
 
     console.log("\n[2] Encrypted 1:1 send -> relay -> receive");
