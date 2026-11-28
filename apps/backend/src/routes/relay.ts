@@ -28,6 +28,7 @@ import {
 } from "../db/message-status.js";
 import { phoneHash } from "../utils/phone-hash.js";
 import { pushToDevice } from "../ws/socket-registry.js";
+import { groupRowStillDeliverable, handleGroupSend } from "./relay-group.js";
 
 const router: Router = Router();
 
@@ -110,7 +111,7 @@ function isValidHexCiphertext(v: unknown): v is string {
 }
 
 /** Whether a message is addressed to a given user (user fan-out OR device ownership). */
-function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
+export function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
   return or(
     eq(pendingMessages.recipientUserId, authUserId),
     sql`EXISTS (SELECT 1 FROM devices WHERE devices.id = ${pendingMessages.recipientDeviceId} AND devices.user_id = ${authUserId})`,
@@ -133,7 +134,8 @@ function isAddressedToUser(authUserId: string): ReturnType<typeof sql> {
 //   ciphertext?: string,              // hex, same blob to every targeted device
 //   recipientUserId?: string,         //   -> one row per active device of that user
 //   recipientDeviceId?: string,       //   -> one row for that device
-//   recipientGroupId?: string,        //   -> rejected until BE-5.7
+//   recipientGroupId?: string,        //   -> BE-5.7 group fan-out (ciphertext + clientMessageId required;
+//                                     //      see routes/relay-group.ts). Response differs: recipientCount, statuses[].
 // }
 //
 // Response: { success, duplicate, count, rows: [{ id, recipientDeviceId, pushed }], status? }
@@ -207,10 +209,33 @@ router.post("/send", async (req: Request, res: Response) => {
       return;
     }
 
-    // Group sends were unreachable before (the exactly-one rule above conflicts with
-    // the group row needing a relay device) and real fan-out is BE-5.7. Reject explicitly.
+    // BE-5.7: group fan-out. One ciphertext (Sender Key) is queued for every device of every
+    // current member; per-recipient status rows are created. See routes/relay-group.ts.
     if (recipientGroupId) {
-      res.status(400).json({ error: "GROUP_SEND_NOT_IMPLEMENTED", message: "Group fan-out is BE-5.7" });
+      if (typeof recipientGroupId !== "string" || !UUID_RE.test(recipientGroupId)) {
+        res.status(400).json({ error: "INVALID_GROUP_ID" });
+        return;
+      }
+      if (!clientMessageId) {
+        // Per-recipient status is keyed by it; without it a group send could not be tracked or retried.
+        res.status(400).json({ error: "CLIENT_MESSAGE_ID_REQUIRED" });
+        return;
+      }
+      if (!isValidHexCiphertext(ciphertext)) {
+        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+        return;
+      }
+      await handleGroupSend({
+        res,
+        db,
+        authUserId,
+        authDeviceId,
+        groupId: recipientGroupId,
+        clientMessageId,
+        ciphertext: Buffer.from(ciphertext, "hex"),
+        messageType: msgType,
+        expiresAt: new Date(Date.now() + MESSAGE_TTL_MS),
+      });
       return;
     }
 
@@ -475,6 +500,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         createdAt: pendingMessages.createdAt,
         expiresAt: pendingMessages.expiresAt,
         clientMessageId: pendingMessages.clientMessageId,
+        recipientGroupId: pendingMessages.recipientGroupId,
         senderPhone: users.phoneNumber,
       })
       .from(pendingMessages)
@@ -485,14 +511,20 @@ router.post("/poll", async (req: Request, res: Response) => {
           eq(pendingMessages.recipientDeviceId, targetDevice),
           isNull(pendingMessages.deliveredAt),
           gt(pendingMessages.expiresAt, new Date()),
-          eq(pendingMessages.recipientUserId, authUserId),
+          // 1:1 rows carry the recipient user id; BE-5.7 group rows carry only the group id,
+          // so ownership is checked through the device (same helper /relay/ack uses).
+          isAddressedToUser(authUserId),
+          // A member removed from the group after the send no longer receives its queued copy.
+          groupRowStillDeliverable(),
         ),
       )
       .orderBy(pendingMessages.createdAt);
 
     // DB-2.4: drop messages whose sender is a blocked partner (either direction),
     // so a blocked user's messages are never delivered to the recipient.
+    // PRD 19.8: blocking does not apply inside shared groups, so group rows are kept.
     const visible = rows.filter((r) => {
+      if (r.recipientGroupId) return true;
       if (!r.senderPhone) return true;
       return !blockedPartners.has(phoneHash(r.senderPhone));
     });
@@ -507,6 +539,7 @@ router.post("/poll", async (req: Request, res: Response) => {
         createdAt: r.createdAt,
         expiresAt: r.expiresAt,
         clientMessageId: r.clientMessageId,
+        groupId: r.recipientGroupId,
       })),
     });
 
@@ -563,6 +596,9 @@ router.post("/ack", async (req: Request, res: Response) => {
               senderDeviceId: row.senderDeviceId,
               clientMessageId: row.clientMessageId,
               to: "delivered",
+              // BE-5.7: a group message has one status row per recipient; only the acking
+              // member's row moves. (Equal to the sole recipient for a 1:1 message.)
+              recipientUserId: authUserId,
             })
           : null;
       return { updated: row, status: changed };

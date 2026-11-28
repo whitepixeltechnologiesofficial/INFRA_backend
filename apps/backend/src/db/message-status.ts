@@ -29,6 +29,8 @@ export type StatusRow = typeof messageStatus.$inferSelect;
 
 export type StatusEvent = {
   clientMessageId: string;
+  /** BE-5.7: whose status this is. Always set; for a 1:1 message it is the one recipient. */
+  recipientUserId: string;
   state: MessageState;
   sentAt: Date;
   deliveredAt: Date | null;
@@ -41,6 +43,7 @@ export type StatusEvent = {
 export function toStatusEvent(row: StatusRow): StatusEvent {
   return {
     clientMessageId: row.clientMessageId,
+    recipientUserId: row.recipientUserId,
     state: row.state,
     sentAt: row.sentAt,
     deliveredAt: row.deliveredAt,
@@ -68,6 +71,54 @@ export async function recordSent(
     .values({ ...args, state: "sent", expiresAt: newExpiry() })
     .returning();
   return row!;
+}
+
+/**
+ * BE-5.7 - Create one `sent` row per recipient member of a group message.
+ * Call inside the same transaction as the pending_messages insert.
+ */
+export async function recordSentMany(
+  db: AppDbLike,
+  args: {
+    senderDeviceId: string;
+    senderUserId: string;
+    clientMessageId: string;
+    recipientUserIds: string[];
+  },
+): Promise<StatusRow[]> {
+  if (args.recipientUserIds.length === 0) return [];
+  const expiresAt = newExpiry();
+  return db
+    .insert(messageStatus)
+    .values(
+      args.recipientUserIds.map((recipientUserId) => ({
+        senderDeviceId: args.senderDeviceId,
+        senderUserId: args.senderUserId,
+        clientMessageId: args.clientMessageId,
+        recipientUserId,
+        state: "sent" as const,
+        expiresAt,
+      })),
+    )
+    .returning();
+}
+
+/** All per-recipient status rows of one message (1 for a 1:1 message, one per member for a group). */
+export async function getStatuses(
+  db: AppDbLike,
+  senderDeviceId: string,
+  clientMessageId: string,
+): Promise<StatusRow[]> {
+  return db
+    .select()
+    .from(messageStatus)
+    .where(
+      and(
+        eq(messageStatus.senderDeviceId, senderDeviceId),
+        eq(messageStatus.clientMessageId, clientMessageId),
+      ),
+    )
+    .orderBy(messageStatus.recipientUserId);
 }
 
 export async function getStatus(
