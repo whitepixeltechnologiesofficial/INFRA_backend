@@ -22,7 +22,7 @@ import { legalAcceptances } from "../db/legal-acceptances-schema.js";
  * TAD §6.8 stores this as `legal_acceptances.document_version`; PRD §5.1
  * lists versioned consent tracking for material Terms/Privacy updates.
  */
-export const CURRENT_LEGAL_VERSION = "v1.0-2024-01-15";
+export const CURRENT_LEGAL_VERSION = "v1.1";
 
 /**
  * Record that a user has accepted the legal terms.

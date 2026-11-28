@@ -7,7 +7,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 const KEY = 'legalAcceptedVersion';
-const LEGAL_ACCEPTANCE_VERSION = 'v2.0';
+const LEGAL_ACCEPTANCE_VERSION = 'v1.1';
 
 export async function hasAcceptedLegal(): Promise<boolean> {
   try {

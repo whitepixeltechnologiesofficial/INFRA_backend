@@ -2,7 +2,7 @@
 import { onboardingApi } from '@/api/onboardingApi';
 import { useSessionContext } from '@/providers/SessionProvider';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
-import { requireLegalAccepted } from '@/lib/legal-acceptance';
+import { LOGIN_HERE_ALERT } from '@/lib/session-alerts';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -97,22 +97,6 @@ export default function OtpEntryScreen() {
     }
   }, [expirySeconds, expired]);
 
-  // --- Legal gate ---
-  // OTP entry can be reached via a restored stack or deep link; bounce back to
-  // acceptance unless it was durably recorded.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const legalAccepted = await requireLegalAccepted();
-      if (!cancelled && !legalAccepted) {
-        router.replace('/legal-acceptance');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // --- Shake animation ---
   const runShake = useCallback(() => {
     shake.setValue(0);
@@ -168,14 +152,20 @@ export default function OtpEntryScreen() {
           // connect until an app restart. Re-read state from storage now.
           await refreshSession();
 
-          if (result.routing === 'chats') {
-            router.replace('/(tabs)');
-          } else {
-            router.replace({
-              pathname: '/profile-setup',
-              params: { phoneNumber, displayPhone },
-            });
-          }
+          const continueAfterLogin = () => {
+            if (result.routing === 'chats') {
+              router.replace('/(tabs)');
+            } else {
+              router.replace({
+                pathname: '/profile-setup',
+                params: { phoneNumber, displayPhone },
+              });
+            }
+          };
+
+          Alert.alert(LOGIN_HERE_ALERT.title, LOGIN_HERE_ALERT.message, [
+            { text: LOGIN_HERE_ALERT.button, onPress: continueAfterLogin },
+          ]);
         } else if (result.status === 'wrong_code') {
           const remaining = result.attemptsRemaining;
           setError(`Incorrect OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} left.`);

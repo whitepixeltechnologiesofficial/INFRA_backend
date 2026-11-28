@@ -44,7 +44,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Sealine to access your camera to scan QR codes."
+          "cameraPermission": "Allow the app to access your camera to scan QR codes."
         }
       ]
     ],

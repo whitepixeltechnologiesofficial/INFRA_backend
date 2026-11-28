@@ -83,8 +83,11 @@ export function createPool({ connectionString }: PoolOptions): pg.Pool {
     );
   }
 
+  const poolUrl = new URL(connectionString);
+  poolUrl.searchParams.delete("sslmode");
+
   return new Pool({
-    connectionString,
+    connectionString: poolUrl.toString(),
     ssl: ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: false },
   });
 }
