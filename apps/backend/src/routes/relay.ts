@@ -10,6 +10,7 @@
  * creates N pending_messages rows — one per recipient_device_id.
  */
 
+import { MAX_TEXT_CIPHERTEXT_HEX } from "@wpt/shared";
 import { Router, type Request, type Response } from "express";
 import { eq, and, or, isNull, isNotNull, gt, inArray, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
@@ -102,11 +103,23 @@ export async function blockedPartnerHashes(
   return partners;
 }
 
-/** Strict hex ciphertext validation — reject silently-truncated garbage. */
-function isValidHexCiphertext(v: unknown): v is string {
+const DEFAULT_MAX_CIPHERTEXT_HEX = 200_000; // non-text types: ~100 KB binary
+
+/** Max hex length allowed for a ciphertext, by message type (BE-5.4). */
+export function maxCiphertextHex(msgType: string): number {
+  return msgType === "text" ? MAX_TEXT_CIPHERTEXT_HEX : DEFAULT_MAX_CIPHERTEXT_HEX;
+}
+
+/** True when a TEXT ciphertext is over the cap. Caller answers 413 MESSAGE_TOO_LONG. */
+export function isOversizedTextCiphertext(v: unknown, msgType: string): boolean {
+  return msgType === "text" && typeof v === "string" && v.length > MAX_TEXT_CIPHERTEXT_HEX;
+}
+
+/** Strict hex ciphertext validation, reject silently-truncated garbage. */
+export function isValidHexCiphertext(v: unknown, maxHex = DEFAULT_MAX_CIPHERTEXT_HEX): v is string {
   if (typeof v !== "string" || !v) return false;
   if (v.length % 2 !== 0) return false;
-  if (v.length > 200_000) return false; // ~100 KB binary, matches 100kb body cap
+  if (v.length > maxHex) return false;
   return /^[0-9a-fA-F]+$/.test(v);
 }
 
@@ -221,10 +234,15 @@ router.post("/send", async (req: Request, res: Response) => {
         res.status(400).json({ error: "CLIENT_MESSAGE_ID_REQUIRED" });
         return;
       }
-      if (!isValidHexCiphertext(ciphertext)) {
-        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+            if (isOversizedTextCiphertext(ciphertext, msgType)) {
+        res.status(413).json({ error: "MESSAGE_TOO_LONG" });
         return;
       }
+      if (!isValidHexCiphertext(ciphertext, maxCiphertextHex(msgType))) {
+        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, within the size limit)" });
+        return;
+      }
+      
       await handleGroupSend({
         res,
         db,
@@ -250,7 +268,11 @@ router.post("/send", async (req: Request, res: Response) => {
       }
       const seen = new Set<string>();
       for (const r of recipients) {
-        if (!r || typeof r.deviceId !== "string" || !UUID_RE.test(r.deviceId) || !isValidHexCiphertext(r.ciphertext)) {
+                if (r && isOversizedTextCiphertext(r.ciphertext, msgType)) {
+          res.status(413).json({ error: "MESSAGE_TOO_LONG" });
+          return;
+        }
+        if (!r || typeof r.deviceId !== "string" || !UUID_RE.test(r.deviceId) || !isValidHexCiphertext(r.ciphertext, maxCiphertextHex(msgType))) {
           res.status(400).json({ error: "each recipient needs deviceId (uuid) and hex ciphertext" });
           return;
         }
@@ -290,8 +312,12 @@ router.post("/send", async (req: Request, res: Response) => {
         ciphertext: Buffer.from(r.ciphertext!, "hex"),
       }));
     } else {
-      if (!isValidHexCiphertext(ciphertext)) {
-        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, <= 200000 chars)" });
+            if (isOversizedTextCiphertext(ciphertext, msgType)) {
+        res.status(413).json({ error: "MESSAGE_TOO_LONG" });
+        return;
+      }
+      if (!isValidHexCiphertext(ciphertext, maxCiphertextHex(msgType))) {
+        res.status(400).json({ error: "ciphertext must be non-empty hex (even length, within the size limit)" });
         return;
       }
       const blob = Buffer.from(ciphertext, "hex");

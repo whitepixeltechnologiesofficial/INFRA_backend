@@ -65,7 +65,17 @@ export function createApp(): BackendServer {
   );
 
   // ── Body parsing with size limit (100 KB max) ──
-  app.use(express.json({ limit: "100kb" }));
+  // BE-5.4: relay send carries up to 20 devices x 532,480 hex chars, so it gets a larger limit.
+const relayJson = express.json({ limit: "11mb" });
+const defaultJson = express.json({ limit: "100kb" });
+const relayPrefix = `/api/${API_VERSION}/relay`;
+app.use((req, res, next) => {
+  if (req.path === relayPrefix || req.path.startsWith(`${relayPrefix}/`)) {
+    relayJson(req, res, next);
+  } else {
+    defaultJson(req, res, next);
+  }
+});
 
   app.get(`/api/${API_VERSION}/health`, (_req, res) => {
     res.json({ ok: true });
@@ -216,4 +226,4 @@ export function createApp(): BackendServer {
   });
 
   return { httpServer, io };
-}
+}
