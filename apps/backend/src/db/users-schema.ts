@@ -12,13 +12,16 @@
  * insert). This prevents duplicate accounts for the same number.
  */
 
-import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+
+/** Architecture §6.1 — moderation state of an account (migration 022). */
+export const accountStatus = pgEnum("account_status", ["active", "warned", "restricted", "banned"]);
 
 export const users = pgTable(
   "users",
   {
-    /** Primary key — deterministic user identifier. */
-    id: varchar("id", { length: 64 }).primaryKey().notNull(),
+    /** Primary key — UUID (Architecture §6.1). */
+    id: uuid("id").primaryKey().defaultRandom(),
 
     /** Phone number in E.164 format — unique across all users. */
     phoneNumber: varchar("phone_number", { length: 20 }).notNull(),
@@ -31,6 +34,9 @@ export const users = pgTable(
 
     /** About / bio — user-provided, max ~500 chars. */
     about: text("about"),
+
+    /** Moderation state — active unless a moderator acts (§6.1). */
+    accountStatus: accountStatus("account_status").notNull().default("active"),
 
     /** Row creation time. */
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -49,5 +55,6 @@ export const users = pgTable(
     uniqueIndex("users_phone_number_unique").on(table.phoneNumber),
     // Fast lookup by phone number (the hot path on OTP-verify).
     index("users_phone_number_idx").on(table.phoneNumber),
+    index("users_account_status_idx").on(table.accountStatus),
   ],
 );
