@@ -3,6 +3,7 @@ import { onboardingApi } from '@/api/onboardingApi';
 import { COUNTRIES, type Country } from '@/constants/countries';
 import { Fonts } from '@/constants/typography';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
+import { requireLegalAccepted } from '@/lib/legal-acceptance';
 import { Ionicons } from '@expo/vector-icons';
 import {
   AsYouType,
@@ -16,7 +17,7 @@ import { Metadata, type MetadataJson } from 'libphonenumber-js/core';
 import metadataJson from 'libphonenumber-js/metadata.mobile.json';
 import examples from 'libphonenumber-js/examples.mobile.json';
 import { router } from 'expo-router';
-// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
+import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -204,7 +205,7 @@ export default function PhoneEntryScreen() {
   };
 
   return (
-    <View
+    <LinearGradient
       colors={[C.bg2, C.bg]}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 0.45 }}
@@ -319,7 +320,7 @@ export default function PhoneEntryScreen() {
           </Animated.View>
         </View>
       </Modal>
-    </View>
+    </LinearGradient>
   );
 }
 

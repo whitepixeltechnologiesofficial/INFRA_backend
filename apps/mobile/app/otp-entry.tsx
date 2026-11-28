@@ -1,10 +1,12 @@
-﻿// app/otp-entry.tsx
+// app/otp-entry.tsx
 import { onboardingApi } from '@/api/onboardingApi';
+import { useSessionContext } from '@/providers/SessionProvider';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
+import { requireLegalAccepted } from '@/lib/legal-acceptance';
 import { Ionicons } from '@expo/vector-icons';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
-// import { LinearGradient } from 'expo-linear-gradient'; // shimmed for Expo Go
+import { LinearGradient } from "expo-linear-gradient";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -44,6 +46,7 @@ function formatClock(totalSeconds: number): string {
 }
 
 export default function OtpEntryScreen() {
+  const { refreshSession } = useSessionContext();
   const params = useLocalSearchParams<{ phoneNumber: string; displayPhone?: string }>();
   const phoneNumber = params.phoneNumber || '';
   const displayPhone = params.displayPhone || '';
@@ -94,6 +97,22 @@ export default function OtpEntryScreen() {
     }
   }, [expirySeconds, expired]);
 
+  // --- Legal gate ---
+  // OTP entry can be reached via a restored stack or deep link; bounce back to
+  // acceptance unless it was durably recorded.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const legalAccepted = await requireLegalAccepted();
+      if (!cancelled && !legalAccepted) {
+        router.replace('/legal-acceptance');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // --- Shake animation ---
   const runShake = useCallback(() => {
     shake.setValue(0);
@@ -122,11 +141,20 @@ export default function OtpEntryScreen() {
       setIsVerifying(true);
 
       try {
-        const result = await onboardingApi.verifyOtp({ phoneNumber, code: entered });
+        const result = await onboardingApi.verifyOtp({
+          phoneNumber,
+          code: entered,
+          // State the platform so the server does not record every device as
+          // Android (LOGIN-3.7). Identity keys are provisioned later.
+          deviceInfo: { platform: Platform.OS === 'ios' ? 'ios' : 'android' },
+        });
 
         if (result.status === 'success') {
-          const deviceId = `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-          // Write all tokens in parallel â€” saves ~100ms on cold storage.
+          // The server minted the device id (devices.id is a uuid) and returned
+          // it. Persist that exact value: inventing a local id here broke
+          // /session/check, socket auth and refresh after the first reload.
+          const deviceId = result.deviceId;
+          // Write all tokens in parallel — saves ~100ms on cold storage.
           await Promise.all([
             SecureStore.setItemAsync('userId', result.userId),
             SecureStore.setItemAsync('deviceId', deviceId),
@@ -134,6 +162,11 @@ export default function OtpEntryScreen() {
             SecureStore.setItemAsync('refreshToken', result.refreshToken),
             SecureStore.setItemAsync('displayPhone', displayPhone),
           ]);
+
+          // SessionProvider mounts once, so its in-memory userId/deviceId are
+          // still null at this point and the force_logout socket would not
+          // connect until an app restart. Re-read state from storage now.
+          await refreshSession();
 
           if (result.routing === 'chats') {
             router.replace('/(tabs)');
@@ -182,7 +215,18 @@ export default function OtpEntryScreen() {
 
   const handleOtpChange = (text: string, index: number) => {
     const cleaned = text.replace(/\D/g, '');
-    if (!cleaned) return;
+
+    // Clearing a box must be honoured: with maxLength=1 a filled box rejects
+    // any re-typed digit, so ignoring the empty string left a mistyped digit
+    // uncorrectable and forced a full resend.
+    if (!cleaned) {
+      if (!otp[index]) return;
+      const cleared = [...otp];
+      cleared[index] = '';
+      setOtp(cleared);
+      setError('');
+      return;
+    }
 
     const next = [...otp];
     let pos = index;
@@ -212,9 +256,12 @@ export default function OtpEntryScreen() {
 
   // --- Resend OTP ---
   const handleResend = async () => {
-    if (resendCooldown > 0) return;
+    // Blocked while a code is still fresh OR while the account is locked out.
+    // The OTP send endpoint clears the server-side lockout, so without this
+    // guard a resend can be used to escape the 3-attempt wait.
+    if (resendCooldown > 0 || isLocked) return;
 
-    // Fire resend optimistically â€” update UI immediately, don't block on network.
+    // Update UI optimistically so the button can't be double-fired.
     setResendCooldown(30);
     setExpirySeconds(CODE_LIFETIME);
     setOtp(Array(BOXES).fill(''));
@@ -222,8 +269,24 @@ export default function OtpEntryScreen() {
 
     try {
       await onboardingApi.sendOtp({ phoneNumber });
-    } catch {
-      // If resend failed, stop the cooldown so user can retry.
+    } catch (e: any) {
+      const code = e?.body?.error ?? e?.error ?? e?.message;
+
+      if (code === 'OTP_LOCKED_OUT') {
+        setIsLocked(true);
+        setLockoutSeconds((prev) => (prev > 0 ? prev : 30));
+        setError('Too many attempts. Try again shortly.');
+        return;
+      }
+
+      if (code === 'RESEND_COOLDOWN_ACTIVE' || e?.status === 429) {
+        const seconds = Number(e?.body?.secondsRemaining);
+        setResendCooldown(Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 30);
+        setError('Too many OTP requests. Please wait before retrying.');
+        return;
+      }
+
+      // If resend failed for another reason, stop the cooldown so user can retry.
       setResendCooldown(0);
       Alert.alert('Error', 'Failed to resend OTP. Please try again.');
     }
@@ -239,7 +302,7 @@ export default function OtpEntryScreen() {
 
   return (
     <SafeAreaView style={styles.safeRoot} edges={['top']}>
-      <View
+      <LinearGradient
         colors={[C.bg2, C.bg]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.45 }}
@@ -300,7 +363,7 @@ export default function OtpEntryScreen() {
               {error ? (
                 <Text style={styles.error}>{error}</Text>
               ) : expired ? (
-                <Text style={styles.expired}>OTP expired â€” request a new one</Text>
+                <Text style={styles.expired}>OTP expired — request a new one</Text>
               ) : (
                 <Text style={styles.expiry}>
                   OTP expires in <Text style={styles.expiryTime}>{clock}</Text>
@@ -324,13 +387,13 @@ export default function OtpEntryScreen() {
               disabled={OTP.length !== BOXES || isVerifying || isLocked || expired}
               onPress={() => verify(OTP)}
             >
-              <Text style={styles.btnText}>{isVerifying ? 'Verifyingâ€¦' : 'Verify'}</Text>
+              <Text style={styles.btnText}>{isVerifying ? 'Verifying…' : 'Verify'}</Text>
             </Pressable>
 
             <Pressable
               style={styles.resend}
               onPress={handleResend}
-              disabled={resendCooldown > 0 || isVerifying}
+              disabled={resendCooldown > 0 || isVerifying || isLocked}
               hitSlop={8}
             >
               <Text style={styles.resendText}>
@@ -338,21 +401,25 @@ export default function OtpEntryScreen() {
                 <Text
                   style={[
                     styles.resendLink,
-                    resendCooldown > 0 && styles.resendLinkDisabled,
+                    (resendCooldown > 0 || isLocked) && styles.resendLinkDisabled,
                   ]}
                 >
-                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP'}
+                  {isLocked
+                    ? `Try again in ${lockoutSeconds}s`
+                    : resendCooldown > 0
+                      ? `Resend in ${resendCooldown}s`
+                      : 'Resend OTP'}
                 </Text>
               </Text>
             </Pressable>
           </View>
         </View>
-      </View>
+      </LinearGradient>
     </SafeAreaView>
   );
 }
 
-// â”€â”€â”€ Styles (hardcoded fonts) â”€â”€â”€
+// —————————— Styles (hardcoded fonts) ——————————
 const styles = StyleSheet.create({
   safeRoot: {
     flex: 1,

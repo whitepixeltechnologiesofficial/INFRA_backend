@@ -15,10 +15,6 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { Platform, AppState, AppStateStatus } from 'react-native';
 
-const getDeviceId = (): string => {
-  return `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-};
-
 const getDeviceName = (): string => {
   const platform = Platform.OS === 'ios' ? 'iPhone' : 'Android';
   return `${platform} ${Platform.OS === 'ios' ? '' : 'Device'}`;
@@ -63,7 +59,12 @@ export const useSession = () => {
         setDeviceId(storedDeviceId);
         const storedDisplayPhone = await SecureStore.getItemAsync('displayPhone');
         if (storedDisplayPhone) setDisplayPhone(storedDisplayPhone);
-        await validateSession(storedDeviceId);
+        const alive = await validateSession(storedDeviceId);
+        // A stored session that validates is authenticated. Without this the
+        // app only learned it was logged in through createSession(), so a cold
+        // start with valid tokens looked signed-out to every consumer of this
+        // hook (including the force_logout socket).
+        if (alive) setIsAuthenticated(true);
       } else if (storedUserId || storedDeviceId) {
         await SecureStore.deleteItemAsync('userId');
         await SecureStore.deleteItemAsync('deviceId');
@@ -128,7 +129,13 @@ export const useSession = () => {
    */
   const createSession = async (newUserId: string) => {
     try {
-      const newDeviceId = getDeviceId();
+      // Reuse the device id the server issued at OTP verify. The server is the
+      // authority for device identity (devices.id is a uuid) and echoes it
+      // back; only mint a placeholder when this install has none yet.
+      const requestedDeviceId =
+        deviceId ??
+        (await SecureStore.getItemAsync('deviceId')) ??
+        `device_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       const deviceName = getDeviceName();
       const platform = Platform.OS === 'ios' ? 'ios' : 'android';
 
@@ -138,11 +145,13 @@ export const useSession = () => {
       const result = await onboardingApi.handleLoginHandoff({
         refreshToken: refreshToken ?? '',
         deviceInfo: {
-          deviceId: newDeviceId,
+          deviceId: requestedDeviceId,
           deviceName,
           platform,
         },
       });
+
+      const newDeviceId = result.deviceId;
 
       await SecureStore.setItemAsync('userId', newUserId);
       await SecureStore.setItemAsync('deviceId', newDeviceId);
@@ -174,6 +183,9 @@ export const useSession = () => {
     router.replace('/phone-entry');
   };
 
+  /** Re-read SecureStore and re-validate — call after a login writes tokens. */
+  const refreshSession = initializeSession;
+
   return {
     isLoading,
     isAuthenticated,
@@ -185,5 +197,6 @@ export const useSession = () => {
     createSession,
     checkSession,
     logout,
+    refreshSession,
   };
 };
