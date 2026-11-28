@@ -47,7 +47,7 @@ cd "C:\Users\mervi\Downloads\backend-Team-Beta\INFRA_backend-Team-Beta\apps\back
 cat > .env << 'EOF'
 PORT=4000
 DATABASE_URL=postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
-JWT_SECRET=fedcba0987654321fedcba0987654321fedcba0987654321fedcba098765432
+JWT_SECRET=ask-your-lead
 CORS_ORIGIN=http://localhost:3000
 
 # Contact hash global salt (required for DB-2.3)
