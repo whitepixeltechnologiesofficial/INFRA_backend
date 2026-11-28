@@ -88,9 +88,24 @@ async function apiOnboardingAuthPost<T>(path: string, body: unknown): Promise<T>
 export type SendOtpParams = { phoneNumber: string };
 export type SendOtpResult = { success: true };
 
-export type VerifyOtpParams = { phoneNumber: string; code: string };
+export type DevicePlatform = 'ios' | 'android' | 'web';
+
+export type VerifyOtpParams = {
+  phoneNumber: string;
+  code: string;
+  /**
+   * Optional client description of the device. The server still owns
+   * `deviceId` (devices.id is a uuid) and returns the authoritative value in
+   * the success payload; this block only supplies platform/identity hints so
+   * the server does not have to guess "android" for everyone (LOGIN-3.7).
+   */
+  deviceInfo?: {
+    platform?: DevicePlatform;
+    identityPublicKey?: string;
+  };
+};
 export type VerifyOtpResult =
-  | { status: 'success'; routing: 'chats' | 'profile_setup'; accessToken: string; refreshToken: string; userId: string; sessionId: string }
+  | { status: 'success'; routing: 'chats' | 'profile_setup'; accessToken: string; refreshToken: string; userId: string; sessionId: string; deviceId: string }
   | { status: 'wrong_code'; attemptsRemaining: number }
   | { status: 'locked_out'; secondsRemaining: number }
   | { status: 'attempts_exhausted' }
@@ -153,6 +168,7 @@ export type LoginHandoffResult = {
   sessionId: string;
   accessToken: string;
   refreshToken: string;
+  deviceId: string;
   message: string;
   previousDevicesLoggedOut: number;
 };
@@ -162,8 +178,8 @@ export const onboardingApi = {
     return apiPost<SendOtpResult>('/otp/send', { phoneNumber });
   },
 
-  async verifyOtp({ phoneNumber, code }: VerifyOtpParams): Promise<VerifyOtpResult> {
-    return apiPost<VerifyOtpResult>('/otp/verify', { phoneNumber, code });
+  async verifyOtp({ phoneNumber, code, deviceInfo }: VerifyOtpParams): Promise<VerifyOtpResult> {
+    return apiPost<VerifyOtpResult>('/otp/verify', { phoneNumber, code, deviceInfo });
   },
 
   async checkExistingUser({ phoneNumber }: CheckExistingUserParams): Promise<CheckExistingUserResult> {
