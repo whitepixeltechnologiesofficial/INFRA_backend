@@ -34,7 +34,7 @@ const COLORS = {
   success: '#3FC6B8',
 };
 
-const DEFAULT_ABOUT = "Hey there! I'm using ONB";
+const DEFAULT_ABOUT = 'Available';
 
 export default function ProfileSetupScreen() {
   const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();

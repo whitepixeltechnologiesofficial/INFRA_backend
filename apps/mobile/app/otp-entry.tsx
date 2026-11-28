@@ -262,9 +262,10 @@ export default function OtpEntryScreen() {
     } catch (e: any) {
       const code = e?.body?.error ?? e?.error ?? e?.message;
 
-      if (code === 'OTP_LOCKED_OUT') {
+      if (code === 'LOCKED_OUT' || code === 'OTP_LOCKED_OUT') {
+        const left = Number(e?.body?.secondsRemaining);
         setIsLocked(true);
-        setLockoutSeconds((prev) => (prev > 0 ? prev : 30));
+        setLockoutSeconds(Number.isFinite(left) && left > 0 ? Math.ceil(left) : 30);
         setError('Too many attempts. Try again shortly.');
         return;
       }
