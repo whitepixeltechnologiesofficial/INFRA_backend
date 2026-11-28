@@ -76,7 +76,7 @@ $$;
 --    NOTE: pg_cron must be enabled in Supabase dashboard:
 --    Settings → Database → Extensions → enable "pg_cron"
 --    The cron.schedule below is idempotent guard: only schedules if job not present.
-DO $$
+DO $do$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup-message-relay') THEN
         PERFORM cron.schedule(
@@ -86,4 +86,4 @@ BEGIN
         );
     END IF;
 END
-$$;
+$do$;
