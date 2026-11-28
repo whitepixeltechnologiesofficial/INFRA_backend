@@ -1,11 +1,52 @@
 import { DarkTheme, DefaultTheme, ThemeProvider as NavThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments, useNavigationContainerRef } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
 import { Lato_400Regular, Lato_400Regular_Italic, Lato_700Bold, Lato_900Black } from '@expo-google-fonts/lato';
 import { ThemeProvider, useThemeContext } from '@/providers/ThemeProvider';
-import { SessionProvider } from '@/providers/SessionProvider';
+import { SessionProvider, useSessionContext } from '@/providers/SessionProvider';
+
+// ONB-1.1 — the ONLY screens you may open without being logged in.
+const PUBLIC_SCREENS = ['index', 'splash', 'legal-acceptance', 'phone-entry', 'otp-entry'];
+
+// Door guard: if you are not logged in and you are on any other screen,
+// go back to the splash screen. Works for taps, back buttons AND deep links.
+function AuthGate() {
+  const { isLoading, isAuthenticated } = useSessionContext();
+  const segments = useSegments();
+  const router = useRouter();
+  const navRef = useNavigationContainerRef();
+
+  useEffect(() => {
+    if (isLoading) return;                     // wait until we know
+    const first = segments[0] ?? 'index';      // which screen are we on?
+    const isPublic = PUBLIC_SCREENS.includes(first);
+    if (!isAuthenticated && !isPublic) {
+      // back to splash.
+      //
+      // NOTE: `router.replace('/')` cannot be used here. The splash
+      // (app/index.tsx) and the tabs home (app/(tabs)/index.tsx) both resolve
+      // to "/", and Expo Router picks the tabs home — so replacing with "/"
+      // would leave the user inside the very screen this guard is blocking
+      // (e.g. a deep link straight to `(tabs)`).
+      const rootState = navRef.current?.getRootState();
+      const appStack = rootState?.routes[0]?.state;
+      if (navRef.current && appStack) {
+        navRef.current.dispatch({
+          type: 'RESET',
+          target: appStack.key,
+          payload: { index: 0, routes: [{ name: 'index' }] },
+        });
+      } else {
+        router.replace('/');
+      }
+    }
+  }, [isLoading, isAuthenticated, segments, router, navRef]);
+
+  return null;
+}
 
 function RootLayoutInner() {
   const { colorScheme, colors } = useThemeContext();
@@ -28,6 +69,7 @@ function RootLayoutInner() {
   return (
     <NavThemeProvider value={navTheme}>
       <SessionProvider>
+        <AuthGate />
         <Stack
           screenOptions={{
             headerShown: false,
@@ -41,6 +83,11 @@ function RootLayoutInner() {
           <Stack.Screen name="profile-setup" options={{ headerShown: false }} />
           <Stack.Screen name="settings" options={{ headerShown: false }} />
           <Stack.Screen name="scan" options={{ headerShown: false, animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="device-handoff" options={{ headerShown: false }} />
+          <Stack.Screen name="blocked-contacts" options={{ headerShown: false }} />
+          <Stack.Screen name="done" options={{ headerShown: false }} />
+          <Stack.Screen name="modal" options={{ headerShown: false }} />
+          <Stack.Screen name="splash" options={{ headerShown: false }} />
         </Stack>
         <StatusBar style={colors.statusBar} />
       </SessionProvider>
