@@ -10,10 +10,21 @@
  *   6. Verify DB state: otp_verifications row deleted, sms_outbox queued
  */
 
+import { createHmac } from "node:crypto";
 import { createPool } from "./pool.js";
 
 const BASE = "http://localhost:4000/api/v1/onboarding";
-const TEST_PHONE = `+1555${String(Date.now()).slice(-7)}`;
+const TEST_PHONE = `+1415555${String(Date.now()).slice(-4)}`;
+
+// The server stores only HMAC-SHA256(OTP_HMAC_SECRET, code). A 6-digit code has 1,000,000 values, so recover it by trying all of them.
+function recoverOtp(hash: string): string | null {
+  const secret = process.env.OTP_HMAC_SECRET ?? "";
+  for (let i = 0; i < 1_000_000; i++) {
+    const c = String(i).padStart(6, "0");
+    if (createHmac("sha256", secret).update(c).digest("hex") === hash) return c;
+  }
+  return null;
+}
 
 let passed = 0;
 let failed = 0;
@@ -80,7 +91,7 @@ async function main() {
     console.log("\n4. Check DB: sms_outbox");
 
     const smsRow = await dbClient.query(
-      "SELECT phone_number, message, status FROM sms_outbox WHERE phone_number = $1 ORDER BY created_at DESC LIMIT 1",
+      "SELECT phone_number, otp_hash, status FROM sms_outbox WHERE phone_number = $1 ORDER BY created_at DESC LIMIT 1",
       [TEST_PHONE],
     );
 
@@ -90,10 +101,11 @@ async function main() {
       const sms = smsRow.rows[0];
 
       assert("status = pending", sms.status === "pending");
-      assert("message contains code digits", /\d{6}/.test(sms.message));
+      assert("OTP recoverable from otp_hash", recoverOtp(sms.otp_hash) !== null);
 
       // Verify the raw code is in the SMS but NOT in otp_verifications
-      const rawCodeMatch = sms.message.match(/(\d{6})/);
+      const recovered = recoverOtp(sms.otp_hash);
+      const rawCodeMatch = recovered ? [recovered, recovered] : null;
 
       if (rawCodeMatch) {
         const rawCode = rawCodeMatch[1];
@@ -198,12 +210,12 @@ async function main() {
 
     // Get the new code from sms_outbox
     const newSms = await dbClient.query(
-      "SELECT message FROM sms_outbox WHERE phone_number = $1 ORDER BY created_at DESC LIMIT 1",
+      "SELECT otp_hash FROM sms_outbox WHERE phone_number = $1 ORDER BY created_at DESC LIMIT 1",
       [TEST_PHONE],
     );
 
-    const codeMatch = newSms.rows[0]?.message?.match(/(\d{6})/);
-    const realCode = codeMatch?.[1];
+    const realCode = newSms.rows[0]?.otp_hash ? recoverOtp(newSms.rows[0].otp_hash) : null;
+    
 
     assert("new OTP code extracted from sms_outbox", !!realCode);
 
