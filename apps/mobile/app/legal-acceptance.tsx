@@ -1,6 +1,6 @@
 // app/legal-acceptance.tsx
 import { onboardingApi } from '@/api/onboardingApi';
-import { hasAcceptedLegal, recordLegalAcceptance } from '@/lib/legal-acceptance';
+import { resolveLegalAcceptResult } from '@/lib/legal-navigation';
 import { Fonts } from '@/constants/typography';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -221,9 +221,6 @@ export default function LegalAcceptanceScreen() {
   const [viewportH, setViewportH] = useState(0);
   const [contentH, setContentH] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
-  // True until the durable-acceptance check settles, so a returning user never
-  // sees the terms flash before being resumed into the app.
-  const [resuming, setResuming] = useState(true);
 
   const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();
   const pendingPhoneNumber = typeof params.phoneNumber === 'string' ? params.phoneNumber : '';
@@ -242,63 +239,31 @@ export default function LegalAcceptanceScreen() {
     return () => sub.remove();
   }, [goBack]);
 
-  // Acceptance is durable: a returning user must not be made to re-read the
-  // terms on every launch, and a stored session must resume instead of being
-  // dropped back on the login screen. The (tabs) gate re-checks both values,
-  // so an expired session still lands on phone-entry.
-  useEffect(() => {
-    let cancelled = false;
-
-    if (hasPendingFlow) {
-      setResuming(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    (async () => {
-      try {
-        if (!(await hasAcceptedLegal())) return;
-
-        const userId = await SecureStore.getItemAsync('userId');
-        if (!cancelled) router.replace(userId ? '/(tabs)' : '/phone-entry');
-      } catch {
-        // Storage unavailable — fall through and show the terms.
-      } finally {
-        if (!cancelled) setResuming(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [hasPendingFlow]);
-
   const handleAgree = async () => {
     if (!hasReadTerms || isSaving) return;
     setIsSaving(true);
     try {
-      await recordLegalAcceptance();
-
       if (hasPendingFlow) {
         await Promise.all([
           onboardingApi.acceptLegal(pendingPhoneNumber),
           onboardingApi.sendOtp({ phoneNumber: pendingPhoneNumber }),
         ]);
-        router.replace({
-          pathname: '/otp-entry',
-          params: { phoneNumber: pendingPhoneNumber, displayPhone: pendingDisplayPhone },
-        });
-        return;
       }
 
-      router.push('/phone-entry');
+      const userId = hasPendingFlow
+        ? null
+        : await SecureStore.getItemAsync('userId');
+      router.replace(
+        resolveLegalAcceptResult({
+          phoneNumber: hasPendingFlow ? pendingPhoneNumber : '',
+          displayPhone: hasPendingFlow ? pendingDisplayPhone : '',
+          hasSession: Boolean(userId),
+        }),
+      );
     } catch {
       Alert.alert(
         'Error',
-        hasPendingFlow
-          ? 'Could not continue. Please try again.'
-          : 'Could not save your acceptance. Please try again.',
+        'Could not continue. Please try again.',
       );
     } finally {
       setIsSaving(false);
@@ -326,10 +291,6 @@ export default function LegalAcceptanceScreen() {
     if (!hasReadTerms) return;
     setAccepted((prev) => !prev);
   };
-
-  if (resuming) {
-    return <View style={styles.root} />;
-  }
 
   return (
     <View style={styles.root}>

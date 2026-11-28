@@ -44,6 +44,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { phoneHash } from "../utils/phone-hash.js";
 import { normalizePhoneNumber } from "../utils/phone-normalize.js";
+import { buildOtpVerifySuccessResponse } from "./otp-verify-response.js";
 
 const router: Router = Router();
 
@@ -519,14 +520,16 @@ router.post(
         phoneNumber,
       });
 
-      res.json({
-        status: "success",
-        routing: result.routing!,
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-        userId: result.userId,
-        sessionId: result.sessionId,
-      });
+      res.json(
+        buildOtpVerifySuccessResponse({
+          routing: result.routing!,
+          accessToken: result.accessToken,
+          refreshToken: result.refreshToken,
+          userId: result.userId,
+          sessionId: result.sessionId,
+          deviceId,
+        }),
+      );
 
     } catch {
 

@@ -66,6 +66,17 @@ check("remote WITH sslmode=require is accepted (warns, no CA)", () => {
   void pool.end();
 });
 
+check("sslmode is removed before pg parses the URL (CA config is not overridden)", () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----";
+  process.env.DATABASE_CA_CERT = pem;
+  const pool = createPool({ connectionString: REMOTE + "?sslmode=verify-full" });
+  const options = pool.options;
+  assert.equal(new URL(options.connectionString!).searchParams.has("sslmode"), false);
+  assert.deepEqual(options.ssl, { ca: pem, rejectUnauthorized: true });
+  delete process.env.DATABASE_CA_CERT;
+  void pool.end();
+});
+
 check("localhost WITHOUT sslmode is accepted (plaintext allowed locally)", () => {
   const pool = createPool({ connectionString: LOCAL });
   assert.equal(typeof pool.query, "function");

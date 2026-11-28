@@ -1,5 +1,5 @@
 // app/index.tsx
-// Root route — onboarding splash screen. Tap to proceed to phone entry.
+// Root route — onboarding splash screen. Tap to proceed to legal acceptance.
 
 import React, { useCallback, useEffect, useRef } from 'react';
 import {
@@ -13,6 +13,8 @@ import {
   BackHandler,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { resolveSplashDestination } from '@/lib/legal-navigation';
+import { useSessionContext } from '@/providers/SessionProvider';
 
 const RING_ENABLED = false;
 
@@ -29,6 +31,7 @@ const COLORS = {
 
 export default function Index() {
   const router = useRouter();
+  const { isLoading, isAuthenticated } = useSessionContext();
 
   // Block hardware back on the splash screen (no going "back" to nothing)
   useFocusEffect(
@@ -63,10 +66,11 @@ export default function Index() {
   }, [breathe]);
 
   const handlePress = useCallback(() => {
+    if (isLoading) return;
     setTimeout(() => {
-      router.push('/phone-entry');
+      router.push(resolveSplashDestination({ hasSession: isAuthenticated }));
     }, 250);
-  }, [router]);
+  }, [isAuthenticated, isLoading, router]);
 
   const haloScale = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.06] });
   const haloOpacity = breathe.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] });

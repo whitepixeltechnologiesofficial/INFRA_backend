@@ -239,6 +239,7 @@ async function main() {
       assert("verify: refreshToken issued", !!verifyOk.data.refreshToken);
       assert("verify: userId present", !!verifyOk.data.userId);
       assert("verify: sessionId present", !!verifyOk.data.sessionId);
+      assert("verify: deviceId present", !!verifyOk.data.deviceId);
 
       // ── 9. Check DB: otp_verifications row DELETED after success ──
       console.log("\n9. Check DB: OTP row deleted after success");
