@@ -1,8 +1,9 @@
 // app/legal-acceptance.tsx
+import { onboardingApi } from '@/api/onboardingApi';
 import { hasAcceptedLegal, recordLegalAcceptance } from '@/lib/legal-acceptance';
 import { Fonts } from '@/constants/typography';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -224,6 +225,11 @@ export default function LegalAcceptanceScreen() {
   // sees the terms flash before being resumed into the app.
   const [resuming, setResuming] = useState(true);
 
+  const params = useLocalSearchParams<{ phoneNumber?: string; displayPhone?: string }>();
+  const pendingPhoneNumber = typeof params.phoneNumber === 'string' ? params.phoneNumber : '';
+  const pendingDisplayPhone = typeof params.displayPhone === 'string' ? params.displayPhone : '';
+  const hasPendingFlow = pendingPhoneNumber.length > 0;
+
   const goBack = useCallback(() => {
     router.back();
   }, []);
@@ -243,6 +249,13 @@ export default function LegalAcceptanceScreen() {
   useEffect(() => {
     let cancelled = false;
 
+    if (hasPendingFlow) {
+      setResuming(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     (async () => {
       try {
         if (!(await hasAcceptedLegal())) return;
@@ -259,16 +272,34 @@ export default function LegalAcceptanceScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [hasPendingFlow]);
 
   const handleAgree = async () => {
     if (!hasReadTerms || isSaving) return;
     setIsSaving(true);
     try {
       await recordLegalAcceptance();
+
+      if (hasPendingFlow) {
+        await Promise.all([
+          onboardingApi.acceptLegal(pendingPhoneNumber),
+          onboardingApi.sendOtp({ phoneNumber: pendingPhoneNumber }),
+        ]);
+        router.replace({
+          pathname: '/otp-entry',
+          params: { phoneNumber: pendingPhoneNumber, displayPhone: pendingDisplayPhone },
+        });
+        return;
+      }
+
       router.push('/phone-entry');
     } catch {
-      Alert.alert('Error', 'Could not save your acceptance. Please try again.');
+      Alert.alert(
+        'Error',
+        hasPendingFlow
+          ? 'Could not continue. Please try again.'
+          : 'Could not save your acceptance. Please try again.',
+      );
     } finally {
       setIsSaving(false);
     }
@@ -344,8 +375,8 @@ export default function LegalAcceptanceScreen() {
           indicatorStyle="white"
           nestedScrollEnabled
         >
-          {LEGAL_SECTIONS.map((section) => (
-            <View key={`${section.part ?? ''}${section.title}`} style={styles.section}>
+          {LEGAL_SECTIONS.map((section, index) => (
+            <View key={`${section.part ?? ''}-${index}-${section.title}`} style={styles.section}>
               {section.part ? <Text style={styles.partTitle}>{section.part}</Text> : null}
               <Text style={styles.sectionTitle}>{section.title}</Text>
               <Text style={styles.sectionBody}>{section.body}</Text>

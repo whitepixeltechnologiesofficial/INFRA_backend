@@ -3,7 +3,7 @@ import { onboardingApi } from '@/api/onboardingApi';
 import { COUNTRIES, type Country } from '@/constants/countries';
 import { Fonts } from '@/constants/typography';
 import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
-import { requireLegalAccepted } from '@/lib/legal-acceptance';
+import { hasAcceptedLegal, recordLegalAcceptance } from '@/lib/legal-acceptance';
 import { Ionicons } from '@expo/vector-icons';
 import {
   AsYouType,
@@ -188,7 +188,18 @@ export default function PhoneEntryScreen() {
     setIsLoading(true);
 
     try {
-      // Both calls are independent — fire in parallel to halve the wait.
+      const { exists } = await onboardingApi.checkExistingUser({ phoneNumber: e164 });
+      const legalAccepted = await hasAcceptedLegal();
+
+      if (!exists && !legalAccepted) {
+        router.push({
+          pathname: '/legal-acceptance',
+          params: { phoneNumber: e164, displayPhone: phone },
+        });
+        return;
+      }
+
+      await recordLegalAcceptance();
       await Promise.all([
         onboardingApi.acceptLegal(e164),
         onboardingApi.sendOtp({ phoneNumber: e164 }),
@@ -198,7 +209,7 @@ export default function PhoneEntryScreen() {
         params: { phoneNumber: e164, displayPhone: phone },
       });
     } catch {
-      Alert.alert('Error', 'Failed to send OTP. Please try again.');
+      Alert.alert('Error', 'Could not continue. Please try again.');
     } finally {
       setIsLoading(false);
     }

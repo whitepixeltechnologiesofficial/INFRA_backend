@@ -1,5 +1,5 @@
 // app/index.tsx
-// Root route — onboarding splash screen. Tap to proceed to legal-acceptance.
+// Root route — onboarding splash screen. Tap to proceed to phone entry.
 
 import React, { useCallback, useEffect, useRef } from 'react';
 import {
@@ -64,7 +64,7 @@ export default function Index() {
 
   const handlePress = useCallback(() => {
     setTimeout(() => {
-      router.push('/legal-acceptance');
+      router.push('/phone-entry');
     }, 250);
   }, [router]);
 
